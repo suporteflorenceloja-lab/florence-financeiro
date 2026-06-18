@@ -66,18 +66,23 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         full_text = "\n".join(all_text_pages)
         full_text_norm = _normalize_text(full_text)
 
-        # Parse: try normalized first, then raw
-        rows = _parse_text(full_text_norm, filename)
-        if not rows:
-            rows = _parse_text(full_text, filename)
+        is_santander = "santander" in full_text.lower() or "santander" in filename.lower()
+        is_extrato_cc = is_santander and bool(re.search(r"per[ií]odos?:|agência:|conta:\s*\d", full_text, re.I))
+
+        if is_extrato_cc:
+            # Santander conta corrente — parser específico para formato multi-linha
+            rows = _parse_santander_extrato(full_text_norm or full_text, filename)
+        else:
+            rows = _parse_text(full_text_norm, filename)
+            if not rows:
+                rows = _parse_text(full_text, filename)
+            # Santander fatura de cartão: débitos positivos, créditos negativos — inverter
+            if is_santander:
+                for r in rows:
+                    r["amount"] = -r["amount"]
 
         # Remove zero-amount or empty-description rows
         rows = [r for r in rows if r["amount"] != 0.0 and r["description"].strip()]
-
-        # Santander extrato: débitos são positivos e créditos são negativos — inverter
-        if "santander" in full_text.lower() or "santander" in filename.lower():
-            for r in rows:
-                r["amount"] = -r["amount"]
 
         # Diagnostic: start from "Demonstrativo" if present, else full text
         diag = full_text_norm or full_text
@@ -88,6 +93,89 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
 
     except Exception as e:
         return [], f"Erro ao processar PDF: {e}"
+
+
+def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
+    """Parser para extrato conta corrente Santander.
+
+    Formato: cada transação pode ter a descrição em uma linha e
+    data+valor+saldo na linha seguinte, ou tudo em uma linha.
+    A segunda coluna numérica é sempre o saldo — ignorada.
+    """
+    rows = []
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    # Encontra início da tabela (após cabeçalho "Data Histórico")
+    start = 0
+    for i, line in enumerate(lines):
+        if re.search(r"data\s+hist", line, re.I):
+            start = i + 1
+            break
+
+    # Encontra fim (antes do rodapé de saldos)
+    end = len(lines)
+    for i, line in enumerate(lines[start:], start):
+        if re.search(r"saldo de conta(max|\s+corrente)|posição em:|saldo disponível\s*$", line, re.I):
+            end = i
+            break
+
+    lines = lines[start:end]
+
+    date_pat = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*")
+    # Dois valores BR no final da linha (valor + saldo)
+    two_nums = re.compile(
+        r"(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$"
+    )
+    # Linhas a ignorar
+    skip_line = re.compile(
+        r"^(saldo|total|vencimento|central|atendimento|sac|ouvidoria|4004|0800|"
+        r"juros|iof|limite|desbloqueio|provisão|posição|período)",
+        re.I,
+    )
+
+    pending_desc = ""
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        date_m = date_pat.match(line)
+        amt_m = two_nums.search(line)
+
+        if date_m and amt_m:
+            dt = _parse_date_str(date_m.group(1))
+            amount = _parse_amount(amt_m.group(1))  # primeiro número = valor
+
+            # Descrição: texto entre a data e os valores
+            mid = line[date_m.end():amt_m.start()].strip()
+            # Remove número de documento puro (5+ dígitos no início)
+            mid = re.sub(r"^\d{5,}\s*", "", mid).strip()
+
+            description = (pending_desc + " " + mid).strip() if pending_desc else mid
+
+            # Próxima linha pode ser continuação da descrição
+            if i + 1 < len(lines):
+                nxt = lines[i + 1]
+                if not date_pat.match(nxt) and not two_nums.search(nxt) and not skip_line.match(nxt) and len(nxt) < 60:
+                    description = (description + " " + nxt).strip()
+                    i += 1
+
+            pending_desc = ""
+            if not description:
+                description = "Sem descrição"
+
+            if dt and amount != 0.0:
+                r = _make_row(dt, description[:200], amount, filename)
+                if r:
+                    rows.append(r)
+
+        elif not date_m and not amt_m and not skip_line.match(line):
+            # Linha só com descrição — guarda para a próxima transação
+            pending_desc = line
+        else:
+            pending_desc = ""
+
+        i += 1
+
+    return rows
 
 
 def _parse_table(table: list[list], filename: str) -> list[dict]:
