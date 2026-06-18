@@ -11,9 +11,10 @@ def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
         raise RuntimeError("DATABASE_URL não configurada.")
-    # Streamlit Cloud / Supabase usa postgres://, psycopg2 precisa de postgresql://
     if dsn.startswith("postgres://"):
         dsn = dsn.replace("postgres://", "postgresql://", 1)
+    if "sslmode" not in dsn:
+        dsn += "?sslmode=require"
     return dsn
 
 
