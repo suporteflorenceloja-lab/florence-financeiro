@@ -135,8 +135,7 @@ with tab_upload:
                     rows = parse_csv(file_bytes, f.name)
                 elif ext == "pdf":
                     rows, diag = parse_pdf(file_bytes, f.name)
-                    if not rows:
-                        pdf_diagnostics.append((f.name, diag))
+                    pdf_diagnostics.append((f.name, diag))
                 else:
                     rows = []
                 all_rows.extend(rows)
@@ -147,17 +146,13 @@ with tab_upload:
             for err in errors:
                 st.warning(f"⚠️ {err}")
 
+        # Diagnóstico sempre visível para PDFs (ajuda a depurar layout)
+        for fname, diag in pdf_diagnostics:
+            with st.expander(f"🔍 Texto extraído de {fname}"):
+                st.code(diag or "(PDF sem texto)", language="text")
+
         if not all_rows:
             st.error("Nenhum lançamento encontrado nos arquivos enviados.")
-            for fname, diag in pdf_diagnostics:
-                with st.expander(f"🔍 Texto extraído de {fname} — cole aqui para diagnóstico"):
-                    st.caption("Verifique se o banco e o formato são reconhecíveis abaixo:")
-                    st.code(diag or "(PDF sem texto — pode ser imagem escaneada)", language="text")
-                    st.info(
-                        "Se o texto acima contém os lançamentos mas o parser não reconheceu, "
-                        "me mostre um trecho para ajustar o padrão. "
-                        "Se estiver em branco, o PDF é uma imagem e precisamos de outra abordagem."
-                    )
         else:
             # Remove lançamentos irrelevantes
             def _should_skip(desc: str) -> bool:
