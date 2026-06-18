@@ -106,11 +106,18 @@ with tab_upload:
 
     st.divider()
 
+    if "uploader_key" not in st.session_state:
+        st.session_state.uploader_key = 0
+    if "import_msg" in st.session_state and st.session_state.import_msg:
+        st.success(st.session_state.import_msg)
+        st.session_state.import_msg = None
+
     uploaded = st.file_uploader(
         "Arraste os arquivos aqui",
         accept_multiple_files=True,
         type=["ofx", "qfx", "csv", "xlsx", "xls", "pdf"],
         help="Aceita OFX (Itaú, Bradesco, Nubank…), CSV, Excel e PDF",
+        key=f"uploader_{st.session_state.uploader_key}",
     )
 
     if uploaded:
@@ -202,8 +209,10 @@ with tab_upload:
                 msg = f"Importados: **{inserted}** | Duplicados ignorados: **{skipped}**"
                 if rules_saved:
                     msg += f" | **{rules_saved} regras** criadas automaticamente"
-                st.success(msg)
+                st.session_state.import_msg = msg
+                st.session_state.uploader_key += 1
                 st.balloons()
+                st.rerun()
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 2 — LANÇAMENTOS
