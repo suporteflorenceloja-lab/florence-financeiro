@@ -74,6 +74,11 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         # Remove zero-amount or empty-description rows
         rows = [r for r in rows if r["amount"] != 0.0 and r["description"].strip()]
 
+        # Santander extrato: débitos são positivos e créditos são negativos — inverter
+        if "santander" in full_text.lower() or "santander" in filename.lower():
+            for r in rows:
+                r["amount"] = -r["amount"]
+
         # Diagnostic: start from "Demonstrativo" if present, else full text
         diag = full_text_norm or full_text
         demo_idx = diag.lower().find("demonstrativo")
