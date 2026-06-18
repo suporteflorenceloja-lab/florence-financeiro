@@ -35,7 +35,7 @@ def _extract_keyword(description: str) -> str:
 
 st.set_page_config(
     page_title="Florence — Financeiro",
-    page_icon="💜",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="collapsed",
 )
