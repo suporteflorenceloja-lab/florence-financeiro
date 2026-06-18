@@ -11,7 +11,7 @@ import streamlit as st
 
 import database as db
 from categorizer import categorize
-from config import CATEGORIES, MONTHS_PT
+from config import CATEGORIES, MONTHS_PT, SKIP_DESCRIPTIONS
 from dre import calculate_dre, export_excel
 from parsers import parse_csv, parse_ofx, parse_pdf
 
@@ -159,6 +159,15 @@ with tab_upload:
                         "Se estiver em branco, o PDF é uma imagem e precisamos de outra abordagem."
                     )
         else:
+            # Remove lançamentos irrelevantes
+            def _should_skip(desc: str) -> bool:
+                desc_upper = desc.upper()
+                return any(kw.upper() in desc_upper for kw in SKIP_DESCRIPTIONS)
+            skipped_auto = sum(1 for r in all_rows if _should_skip(r["description"]))
+            all_rows = [r for r in all_rows if not _should_skip(r["description"])]
+            if skipped_auto:
+                st.caption(f"{skipped_auto} lançamento(s) ignorados automaticamente.")
+
             # Apply rules + AI categorization
             rules = db.get_rules()
             all_rows = categorize(all_rows, rules)
