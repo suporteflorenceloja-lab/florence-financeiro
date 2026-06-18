@@ -96,11 +96,10 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
 
 
 def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
-    """Parser para extrato conta corrente Santander.
+    """Parser para extrato conta corrente Santander (dois passos).
 
-    Formato: cada transação pode ter a descrição em uma linha e
-    data+valor+saldo na linha seguinte, ou tudo em uma linha.
-    A segunda coluna numérica é sempre o saldo — ignorada.
+    Passo 1: identifica linhas de transação (data + dois valores).
+    Passo 2: para cada transação, busca a descrição nas linhas vizinhas.
     """
     rows = []
     lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -122,58 +121,64 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
     lines = lines[start:end]
 
     date_pat = re.compile(r"^(\d{2}/\d{2}/\d{4})\s*")
-    # Dois valores BR no final da linha (valor + saldo)
     two_nums = re.compile(
         r"(-?\d{1,3}(?:\.\d{3})*,\d{2})\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})\s*$"
     )
-    # Linhas a ignorar
     skip_line = re.compile(
         r"^(saldo|total|vencimento|central|atendimento|sac|ouvidoria|4004|0800|"
         r"juros|iof|limite|desbloqueio|provisão|posição|período)",
         re.I,
     )
 
-    pending_desc = ""
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    def is_desc(line: str) -> bool:
+        return (not date_pat.match(line) and not two_nums.search(line)
+                and not skip_line.match(line) and bool(line))
+
+    # Passo 1: coleta todas as linhas de transação
+    txn_lines: list[tuple[int, object, float, str]] = []
+    for i, line in enumerate(lines):
         date_m = date_pat.match(line)
         amt_m = two_nums.search(line)
-
         if date_m and amt_m:
             dt = _parse_date_str(date_m.group(1))
-            amount = _parse_amount(amt_m.group(1))  # primeiro número = valor
-
-            # Descrição: texto entre a data e os valores
+            amount = _parse_amount(amt_m.group(1))
             mid = line[date_m.end():amt_m.start()].strip()
-            # Remove número de documento puro (5+ dígitos no início)
             mid = re.sub(r"^\d{5,}\s*", "", mid).strip()
+            txn_lines.append((i, dt, amount, mid))
 
-            description = (pending_desc + " " + mid).strip() if pending_desc else mid
+    txn_idx_set = {t[0] for t in txn_lines}
+    consumed: set[int] = set()
 
-            # Próxima linha pode ser continuação da descrição
-            if i + 1 < len(lines):
-                nxt = lines[i + 1]
-                if not date_pat.match(nxt) and not two_nums.search(nxt) and not skip_line.match(nxt) and len(nxt) < 60:
-                    description = (description + " " + nxt).strip()
-                    i += 1
+    # Passo 2: para cada transação, monta a descrição a partir das linhas vizinhas
+    for tidx, (line_idx, dt, amount, inline_desc) in enumerate(txn_lines):
+        if not dt or amount == 0.0:
+            continue
 
-            pending_desc = ""
-            if not description:
-                description = "Sem descrição"
+        prev_txn_idx = txn_lines[tidx - 1][0] if tidx > 0 else -1
+        next_txn_idx = txn_lines[tidx + 1][0] if tidx + 1 < len(txn_lines) else len(lines)
 
-            if dt and amount != 0.0:
-                r = _make_row(dt, description[:200], amount, filename)
-                if r:
-                    rows.append(r)
+        # Linhas de continuação APÓS (curtas, apenas quando a linha de transação não tem
+        # descrição inline — senão a linha pertence à próxima transação)
+        # Processadas primeiro para marcar como consumidas antes do scan "before" da próxima txn
+        after = []
+        if not inline_desc:
+            for j in range(line_idx + 1, min(next_txn_idx, line_idx + 3)):
+                if j not in txn_idx_set and is_desc(lines[j]) and len(lines[j]) <= 25:
+                    after.append(lines[j])
+                    consumed.add(j)
 
-        elif not date_m and not amt_m and not skip_line.match(line):
-            # Linha só com descrição — guarda para a próxima transação
-            pending_desc = line
-        else:
-            pending_desc = ""
+        # Linhas de descrição ANTES (entre a transação anterior e esta, não consumidas)
+        before = []
+        for j in range(prev_txn_idx + 1, line_idx):
+            if j not in txn_idx_set and j not in consumed and is_desc(lines[j]):
+                before.append(lines[j])
 
-        i += 1
+        parts = before + ([inline_desc] if inline_desc else []) + after
+        description = " ".join(p for p in parts if p).strip() or "Sem descrição"
+
+        r = _make_row(dt, description[:200], amount, filename)
+        if r:
+            rows.append(r)
 
     return rows
 
