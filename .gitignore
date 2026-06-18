@@ -1,0 +1,22 @@
+# Ambiente Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Banco de dados local
+data/
+*.db
+*.sqlite
+
+# Segredos
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# Streamlit cache
+.streamlit/secrets.toml
