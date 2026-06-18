@@ -10,11 +10,22 @@ from psycopg2 import errors as pg_errors
 def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL")
     if not dsn:
+        # Tenta via st.secrets como fallback
+        try:
+            import streamlit as st
+            dsn = st.secrets.get("DATABASE_URL")
+        except Exception:
+            pass
+    if not dsn:
         raise RuntimeError("DATABASE_URL não configurada.")
     if dsn.startswith("postgres://"):
         dsn = dsn.replace("postgres://", "postgresql://", 1)
     if "sslmode" not in dsn:
         dsn += "?sslmode=require"
+    # Log seguro: mostra usuário e host, esconde senha
+    import re
+    safe = re.sub(r":([^:@]+)@", ":***@", dsn)
+    print(f"[DB] Conectando: {safe}", flush=True)
     return dsn
 
 
