@@ -1,71 +1,25 @@
 import hashlib
 import os
-from contextlib import contextmanager
-
-import psycopg2
-import psycopg2.extras
-from psycopg2 import errors as pg_errors
 
 
-def _get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL")
-    if not dsn:
-        # Tenta via st.secrets como fallback
+def _client():
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not url or not key:
         try:
             import streamlit as st
-            dsn = st.secrets.get("DATABASE_URL")
+            url = url or st.secrets.get("SUPABASE_URL")
+            key = key or st.secrets.get("SUPABASE_SERVICE_KEY")
         except Exception:
             pass
-    if not dsn:
-        raise RuntimeError("DATABASE_URL não configurada.")
-    if dsn.startswith("postgres://"):
-        dsn = dsn.replace("postgres://", "postgresql://", 1)
-    if "sslmode" not in dsn:
-        dsn += "?sslmode=require"
-    # Log seguro: mostra usuário e host, esconde senha
-    import re
-    safe = re.sub(r":([^:@]+)@", ":***@", dsn)
-    print(f"[DB] Conectando: {safe}", flush=True)
-    return dsn
-
-
-@contextmanager
-def _conn():
-    con = psycopg2.connect(_get_dsn(), cursor_factory=psycopg2.extras.RealDictCursor)
-    try:
-        yield con
-        con.commit()
-    except Exception:
-        con.rollback()
-        raise
-    finally:
-        con.close()
+    if not url or not key:
+        raise RuntimeError("SUPABASE_URL e SUPABASE_SERVICE_KEY precisam estar configurados.")
+    from supabase import create_client
+    return create_client(url, key)
 
 
 def init_db():
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id          SERIAL PRIMARY KEY,
-                    row_hash    TEXT    UNIQUE,
-                    date        TEXT    NOT NULL,
-                    description TEXT    NOT NULL,
-                    amount      REAL    NOT NULL,
-                    category    TEXT    NOT NULL DEFAULT 'OUTROS',
-                    source_file TEXT,
-                    month       INTEGER,
-                    year        INTEGER,
-                    created_at  TEXT    DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE IF NOT EXISTS rules (
-                    id       SERIAL PRIMARY KEY,
-                    keyword  TEXT    NOT NULL UNIQUE,
-                    category TEXT    NOT NULL,
-                    priority INTEGER DEFAULT 0
-                );
-            """)
+    _client()  # Verifica conexão; tabelas criadas no dashboard do Supabase
 
 
 def _hash(date, description, amount):
@@ -73,106 +27,93 @@ def _hash(date, description, amount):
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+def _is_duplicate_error(e: Exception) -> bool:
+    msg = str(e).lower()
+    return "23505" in msg or "duplicate" in msg or "unique" in msg
+
+
 def insert_transactions(rows: list[dict]) -> tuple[int, int]:
     inserted = skipped = 0
-    with _conn() as con:
-        with con.cursor() as cur:
-            for r in rows:
-                h = _hash(r["date"], r["description"], r["amount"])
-                try:
-                    cur.execute(
-                        """INSERT INTO transactions
-                           (row_hash, date, description, amount, category, source_file, month, year)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                        (h, r["date"], r["description"], r["amount"],
-                         r.get("category", "OUTROS"), r.get("source_file", ""),
-                         r.get("month"), r.get("year")),
-                    )
-                    inserted += 1
-                except pg_errors.UniqueViolation:
-                    con.rollback()
-                    skipped += 1
+    sb = _client()
+    for r in rows:
+        h = _hash(r["date"], r["description"], r["amount"])
+        data = {
+            "row_hash": h,
+            "date": r["date"],
+            "description": r["description"],
+            "amount": r["amount"],
+            "category": r.get("category", "OUTROS"),
+            "source_file": r.get("source_file", ""),
+            "month": r.get("month"),
+            "year": r.get("year"),
+        }
+        try:
+            sb.table("transactions").insert(data).execute()
+            inserted += 1
+        except Exception as e:
+            if _is_duplicate_error(e):
+                skipped += 1
+            else:
+                raise
     return inserted, skipped
 
 
 def get_transactions(month: int = None, year: int = None, category: str = None) -> list[dict]:
-    clauses, params = [], []
+    sb = _client()
+    query = sb.table("transactions").select("*").order("date", desc=True)
     if month:
-        clauses.append("month = %s")
-        params.append(month)
+        query = query.eq("month", month)
     if year:
-        clauses.append("year = %s")
-        params.append(year)
+        query = query.eq("year", year)
     if category:
-        clauses.append("category = %s")
-        params.append(category)
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute(f"SELECT * FROM transactions {where} ORDER BY date DESC", params)
-            return [dict(r) for r in cur.fetchall()]
+        query = query.eq("category", category)
+    return query.execute().data
 
 
 def update_category(transaction_id: int, category: str):
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute(
-                "UPDATE transactions SET category = %s WHERE id = %s",
-                (category, transaction_id),
-            )
+    sb = _client()
+    sb.table("transactions").update({"category": category}).eq("id", transaction_id).execute()
 
 
 def delete_transaction(transaction_id: int):
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("DELETE FROM transactions WHERE id = %s", (transaction_id,))
+    sb = _client()
+    sb.table("transactions").delete().eq("id", transaction_id).execute()
 
 
 def get_rules() -> list[dict]:
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("SELECT * FROM rules ORDER BY priority DESC, keyword")
-            return [dict(r) for r in cur.fetchall()]
+    sb = _client()
+    return sb.table("rules").select("*").order("priority", desc=True).order("keyword").execute().data
 
 
 def add_rule(keyword: str, category: str, priority: int = 0):
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute(
-                """INSERT INTO rules (keyword, category, priority)
-                   VALUES (%s, %s, %s)
-                   ON CONFLICT (keyword) DO UPDATE
-                   SET category = EXCLUDED.category, priority = EXCLUDED.priority""",
-                (keyword.strip().upper(), category, priority),
-            )
+    sb = _client()
+    kw = keyword.strip().upper()
+    try:
+        sb.table("rules").insert({"keyword": kw, "category": category, "priority": priority}).execute()
+    except Exception as e:
+        if _is_duplicate_error(e):
+            sb.table("rules").update({"category": category, "priority": priority}).eq("keyword", kw).execute()
+        else:
+            raise
 
 
 def delete_rule(rule_id: int):
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("DELETE FROM rules WHERE id = %s", (rule_id,))
+    sb = _client()
+    sb.table("rules").delete().eq("id", rule_id).execute()
 
 
 def get_available_years() -> list[int]:
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute(
-                "SELECT DISTINCT year FROM transactions WHERE year IS NOT NULL ORDER BY year DESC"
-            )
-            return [r["year"] for r in cur.fetchall()]
+    sb = _client()
+    result = sb.table("transactions").select("year").not_.is_("year", "null").execute()
+    return sorted(set(r["year"] for r in result.data if r["year"]), reverse=True)
 
 
 def recategorize_all(rules: list[dict]):
-    with _conn() as con:
-        with con.cursor() as cur:
-            cur.execute("SELECT id, description FROM transactions")
-            txs = cur.fetchall()
-            for tx in txs:
-                desc_upper = tx["description"].upper()
-                for rule in rules:
-                    if rule["keyword"].upper() in desc_upper:
-                        cur.execute(
-                            "UPDATE transactions SET category = %s WHERE id = %s",
-                            (rule["category"], tx["id"]),
-                        )
-                        break
+    sb = _client()
+    txs = sb.table("transactions").select("id,description").execute().data
+    for tx in txs:
+        desc_upper = tx["description"].upper()
+        for rule in rules:
+            if rule["keyword"].upper() in desc_upper:
+                sb.table("transactions").update({"category": rule["category"]}).eq("id", tx["id"]).execute()
+                break
