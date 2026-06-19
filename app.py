@@ -346,36 +346,57 @@ with tab_dre:
     st.divider()
 
     # DRE table
+    av_base = receita if receita else None  # base para análise vertical
+
+    def _av(amt):
+        """Retorna string de análise vertical (% sobre Receita Bruta)."""
+        if av_base and amt is not None:
+            return f"{amt / av_base * 100:.1f}%"
+        return "—"
+
     for entry in dre_rows:
         t     = entry["type"]
         label = entry["label"]
         amt   = entry["amount"]
         level = entry["level"]
-        indent = "  " * (level * 4)
 
         if t == "section":
-            st.markdown(f"**{label}**")
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;'
+                f'font-weight:700;padding:6px 0 2px 0;border-top:2px solid #F0D6E4;">'
+                f'<span>{label}</span>'
+                f'<span style="color:#9CA3AF;font-size:0.8em;font-weight:400">AV%&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;R$</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
             continue
 
-        amt_str = f"R$ {amt:,.2f}" if amt is not None else "—"
-        is_negative_display = t in ("cost",) and amt and amt > 0
+        amt_str = f"{amt:,.2f}" if amt is not None else "—"
+        av_str  = _av(amt)
 
         if t in ("subtotal", "result"):
             color = "#166534" if (amt or 0) >= 0 else "#991b1b"
             st.markdown(
-                f'<div style="display:flex;justify-content:space-between;'
+                f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
                 f'font-weight:700;border-top:1px solid #e9d5ff;padding:4px 0;">'
                 f'<span>{label}</span>'
-                f'<span style="color:{color}">{amt_str}</span></div>',
+                f'<span>'
+                f'<span style="color:#9CA3AF;font-size:0.85em;margin-right:16px">{av_str}</span>'
+                f'<span style="color:{color}">R$ {amt_str}</span>'
+                f'</span></div>',
                 unsafe_allow_html=True,
             )
         else:
-            display_amt = f"(R$ {abs(amt):,.2f})" if is_negative_display else amt_str
+            is_negative_display = t == "cost" and amt and amt > 0
+            display_amt = f"({amt_str})" if is_negative_display else amt_str
             st.markdown(
-                f'<div style="display:flex;justify-content:space-between;'
+                f'<div style="display:flex;justify-content:space-between;align-items:baseline;'
                 f'padding:2px 0;color:#374151;">'
                 f'<span style="padding-left:{level*16}px">{label}</span>'
-                f'<span>{display_amt}</span></div>',
+                f'<span>'
+                f'<span style="color:#9CA3AF;font-size:0.85em;margin-right:16px">{av_str}</span>'
+                f'<span>R$ {display_amt}</span>'
+                f'</span></div>',
                 unsafe_allow_html=True,
             )
 
