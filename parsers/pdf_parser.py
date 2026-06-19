@@ -67,6 +67,7 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         full_text_norm = _normalize_text(full_text)
 
         is_santander = "santander" in full_text.lower() or "santander" in filename.lower()
+        is_nubank    = "nubank"    in full_text.lower() or "nubank"    in filename.lower()
         is_extrato_cc = is_santander and bool(re.search(r"per[ií]odos?:|agência:|conta:\s*\d", full_text, re.I))
 
         if is_extrato_cc:
@@ -76,8 +77,8 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
             rows = _parse_text(full_text_norm, filename)
             if not rows:
                 rows = _parse_text(full_text, filename)
-            # Santander fatura de cartão: débitos positivos, créditos negativos — inverter
-            if is_santander:
+            # Faturas de cartão: despesas vêm como positivo — inverter para negativo
+            if is_santander or is_nubank:
                 for r in rows:
                     r["amount"] = -r["amount"]
 
