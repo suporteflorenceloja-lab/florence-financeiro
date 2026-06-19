@@ -66,14 +66,12 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         full_text = "\n".join(all_text_pages)
         full_text_norm = _normalize_text(full_text)
 
-        is_santander = "santander" in full_text.lower() or "santander" in filename.lower()
         is_nubank    = "nubank"    in full_text.lower() or "nubank"    in filename.lower()
+        is_santander = (not is_nubank) and ("santander" in full_text.lower() or "santander" in filename.lower())
         is_extrato_cc = is_santander and bool(re.search(r"per[ií]odos?:|agência:|conta:\s*\d", full_text, re.I))
         is_nubank_extrato = is_nubank and bool(re.search(r"movimenta[çc][õo]es", full_text, re.I))
 
-        if is_extrato_cc:
-            rows = _parse_santander_extrato(full_text_norm or full_text, filename)
-        elif is_nubank_extrato:
+        if is_nubank_extrato:
             # Nubank conta corrente — sinais já corretos no parser (entradas +, saídas -)
             rows = _parse_nubank_extrato(full_text_norm or full_text, filename)
         elif is_nubank:
@@ -81,6 +79,8 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
             rows = _parse_nubank_fatura(full_text_norm or full_text, filename)
             for r in rows:
                 r["amount"] = -r["amount"]
+        elif is_extrato_cc:
+            rows = _parse_santander_extrato(full_text_norm or full_text, filename)
         else:
             rows = _parse_text(full_text_norm, filename)
             if not rows:
