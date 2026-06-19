@@ -69,12 +69,15 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         is_santander = "santander" in full_text.lower() or "santander" in filename.lower()
         is_nubank    = "nubank"    in full_text.lower() or "nubank"    in filename.lower()
         is_extrato_cc = is_santander and bool(re.search(r"per[ií]odos?:|agência:|conta:\s*\d", full_text, re.I))
+        is_nubank_extrato = is_nubank and bool(re.search(r"movimenta[çc][õo]es", full_text, re.I))
 
         if is_extrato_cc:
-            # Santander conta corrente — parser específico para formato multi-linha
             rows = _parse_santander_extrato(full_text_norm or full_text, filename)
+        elif is_nubank_extrato:
+            # Nubank conta corrente — sinais já corretos no parser (entradas +, saídas -)
+            rows = _parse_nubank_extrato(full_text_norm or full_text, filename)
         elif is_nubank:
-            # Nubank fatura — parser específico para ignorar cabeçalho
+            # Nubank fatura de cartão — despesas positivas, inverter para negativo
             rows = _parse_nubank_fatura(full_text_norm or full_text, filename)
             for r in rows:
                 r["amount"] = -r["amount"]
@@ -231,6 +234,84 @@ def _parse_nubank_fatura(text: str, filename: str) -> list[dict]:
         if not dt or amount == 0.0:
             continue
         r = _make_row(dt, description[:200], amount, filename)
+        if r:
+            rows.append(r)
+
+    return rows
+
+
+def _parse_nubank_extrato(text: str, filename: str) -> list[dict]:
+    """Parser para extrato de conta corrente Nubank.
+
+    Cada dia abre com:
+        15 MAI 2026 Total de saídas - 4,90
+    Seguido por transações no formato:
+        Transferência enviada pelo Pix EBANX... 4,90
+    O sinal (entrada/saída) vem do cabeçalho do bloco do dia.
+    """
+    rows = []
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    # Começa após "Movimentações"
+    start = 0
+    for i, line in enumerate(lines):
+        if re.search(r"^movimenta[çc][õo]es$", line, re.I):
+            start = i + 1
+            break
+
+    # Cabeçalho de dia com data: "15 MAI 2026 Total de saídas - 4,90"
+    day_pat = re.compile(r"^(\d{2}\s+[A-Za-z]+\s+\d{4})\s+Total de (entradas|sa[íi]das)", re.I)
+    # Mudança de direção dentro do mesmo dia: "Total de saídas - 40.020,00"
+    dir_pat = re.compile(r"^Total de (entradas|sa[íi]das)", re.I)
+    # Linhas a ignorar
+    skip_pat = re.compile(
+        r"^(Saldo do dia|Saldo inicial|Saldo final|Rendimento|Tem alguma|Caso a solu|"
+        r"Extrato gerado|Asseguramos|N[ãa]o nos|O saldo l[íi]quido|"
+        r"Nu Paga|Nu Finan|Pr[óo]xima|Atendimento)",
+        re.I,
+    )
+    # Valor BR no final da linha (ex: 4,90 ou 40.000,00)
+    amt_end = re.compile(r"(\d{1,3}(?:\.\d{3})*,\d{2})\s*$")
+
+    current_date = None
+    current_sign = None  # +1 entradas, -1 saídas
+
+    for line in lines[start:]:
+        # Cabeçalho de dia com data e direção
+        m = day_pat.match(line)
+        if m:
+            current_date = _parse_date_str(m.group(1))
+            current_sign = 1 if "entrada" in m.group(2).lower() else -1
+            continue
+
+        # Mudança de direção sem data (segundo bloco do mesmo dia)
+        m = dir_pat.match(line)
+        if m:
+            current_sign = 1 if "entrada" in m.group(1).lower() else -1
+            continue
+
+        if skip_pat.match(line) or current_date is None or current_sign is None:
+            continue
+
+        # Transação: linha termina com valor BR
+        amt_m = amt_end.search(line)
+        if not amt_m:
+            continue
+
+        amount = _parse_amount(amt_m.group(1)) * current_sign
+        if amount == 0.0:
+            continue
+
+        description = line[:amt_m.start()].strip()
+        # Remove traço/espaço residual no fim: "...LTDA. - "
+        description = re.sub(r"[\s\-]+$", "", description).strip()
+        # Remove CNPJ inline: "... - 13.236.697/0001-46 - EBANX..."
+        description = re.sub(r"\s*-\s*\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}.*$", "", description).strip()
+
+        if not description:
+            continue
+
+        r = _make_row(current_date, description[:200], amount, filename)
         if r:
             rows.append(r)
 
