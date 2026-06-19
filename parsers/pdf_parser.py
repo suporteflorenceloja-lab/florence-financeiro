@@ -73,12 +73,17 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         if is_extrato_cc:
             # Santander conta corrente — parser específico para formato multi-linha
             rows = _parse_santander_extrato(full_text_norm or full_text, filename)
+        elif is_nubank:
+            # Nubank fatura — parser específico para ignorar cabeçalho
+            rows = _parse_nubank_fatura(full_text_norm or full_text, filename)
+            for r in rows:
+                r["amount"] = -r["amount"]
         else:
             rows = _parse_text(full_text_norm, filename)
             if not rows:
                 rows = _parse_text(full_text, filename)
-            # Faturas de cartão: despesas vêm como positivo — inverter para negativo
-            if is_santander or is_nubank:
+            # Santander fatura de cartão: débitos positivos — inverter para negativo
+            if is_santander:
                 for r in rows:
                     r["amount"] = -r["amount"]
 
@@ -177,6 +182,54 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
         parts = before + ([inline_desc] if inline_desc else []) + after
         description = " ".join(p for p in parts if p).strip() or "Sem descrição"
 
+        r = _make_row(dt, description[:200], amount, filename)
+        if r:
+            rows.append(r)
+
+    return rows
+
+
+def _parse_nubank_fatura(text: str, filename: str) -> list[dict]:
+    """Parser para fatura Nubank.
+
+    Formato de cada transação:
+        26 ABR •••• 1303 Lycrimalhas - Parcela 4/5 R$ 239,88
+
+    Só lê linhas a partir da seção 'TRANSAÇÕES DE', ignorando o cabeçalho.
+    """
+    rows = []
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    # Extrai o ano da fatura a partir do nome do arquivo ou do texto
+    year_m = re.search(r"\b(20\d{2})\b", filename)
+    if not year_m:
+        for line in lines[:40]:
+            year_m = re.search(r"\b(20\d{2})\b", line)
+            if year_m:
+                break
+    bill_year = int(year_m.group(1)) if year_m else datetime.now().year
+
+    # Encontra o início das transações
+    start = 0
+    for i, line in enumerate(lines):
+        if re.search(r"transa[çc][õo]es\s+de\b", line, re.I):
+            start = i + 1
+            break
+
+    # Padrão: "26 ABR •••• 1303 Descrição R$ 239,88"
+    txn_pat = re.compile(
+        r"^(\d{2}\s+[A-Za-z]{3})\s+\S+\s+\d{4}\s+(.+?)\s+R\$\s*([\d.]+,\d{2})\s*$"
+    )
+
+    for line in lines[start:]:
+        m = txn_pat.match(line)
+        if not m:
+            continue
+        dt = _parse_date_str(m.group(1) + " " + str(bill_year))
+        description = m.group(2).strip()
+        amount = _parse_amount(m.group(3))
+        if not dt or amount == 0.0:
+            continue
         r = _make_row(dt, description[:200], amount, filename)
         if r:
             rows.append(r)
