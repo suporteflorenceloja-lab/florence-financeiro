@@ -577,22 +577,35 @@ with tab_ah:
         if len(months) == 1: return f"{MONTHS_PT[months[0]]} {year}"
         return "/".join(MONTHS_PT[m][:3] for m in sorted(months)) + f" {year}"
 
+    def _sync_b():
+        """Ao mudar o Período A, espelha no Período B com o ano anterior."""
+        ya = st.session_state.get("ah_year_a", "Todos os anos")
+        ma = list(st.session_state.get("ah_months_a", []))
+        if ya == "Todos os anos":
+            st.session_state["ah_year_b"] = "Todos os anos"
+        else:
+            prev = str(int(ya) - 1)
+            st.session_state["ah_year_b"] = prev if prev in _year_opts_ah else _year_opts_ah[-1]
+        st.session_state["ah_months_b"] = ma
+
     col_a, col_b = st.columns(2)
     with col_a:
         st.markdown("##### Período A")
         _yl_a = st.selectbox("Ano", _year_opts_ah,
-                             index=min(1, len(_year_opts_ah)-1), key="ah_year_a")
+                             index=min(1, len(_year_opts_ah)-1), key="ah_year_a",
+                             on_change=_sync_b)
         _year_a = None if _yl_a == "Todos os anos" else int(_yl_a)
         if _year_a:
             _months_a = st.multiselect("Mês(es)", options=list(MONTHS_PT.keys()),
                                        format_func=lambda k: MONTHS_PT[k],
-                                       placeholder="Todos os meses", key="ah_months_a")
+                                       placeholder="Todos os meses", key="ah_months_a",
+                                       on_change=_sync_b)
         else:
             st.caption("Consolidado geral")
             _months_a = []
 
     with col_b:
-        st.markdown("##### Período B  *(base de comparação)*")
+        st.markdown("##### Período B  *(mesmo período, ano anterior)*")
         _yl_b = st.selectbox("Ano", _year_opts_ah,
                              index=min(2, len(_year_opts_ah)-1), key="ah_year_b")
         _year_b = None if _yl_b == "Todos os anos" else int(_yl_b)
