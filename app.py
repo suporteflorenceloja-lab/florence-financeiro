@@ -64,8 +64,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_upload, tab_lancamentos, tab_dre, tab_regras = st.tabs(
-    ["📤 Upload", "📋 Lançamentos", "📊 DRE", "⚙️ Regras"]
+tab_upload, tab_lancamentos, tab_dre, tab_ah, tab_regras = st.tabs(
+    ["📤 Upload", "📋 Lançamentos", "📊 DRE", "📈 Comparativo", "⚙️ Regras"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -562,7 +562,137 @@ with tab_dre:
         st.info("Nenhum lançamento encontrado para o período selecionado.")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 4 — REGRAS
+# TAB 4 — ANÁLISE HORIZONTAL
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_ah:
+    st.subheader("Análise Horizontal — Comparativo entre Períodos")
+
+    _years_ah = db.get_available_years() or [pd.Timestamp.now().year]
+    _year_opts_ah = ["Todos os anos"] + [str(y) for y in _years_ah]
+    _month_opts_ah = {0: "Acumulado no ano"} | MONTHS_PT
+
+    def _periodo_label(year, month):
+        if year is None: return "Todos os anos"
+        if month: return f"{MONTHS_PT[month]} {year}"
+        return str(year)
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("##### Período A")
+        _yl_a = st.selectbox("Ano", _year_opts_ah,
+                             index=min(1, len(_year_opts_ah)-1), key="ah_year_a")
+        _year_a = None if _yl_a == "Todos os anos" else int(_yl_a)
+        if _year_a:
+            _ml_a = st.selectbox("Mês", list(_month_opts_ah.values()), key="ah_month_a")
+            _month_a = [k for k, v in _month_opts_ah.items() if v == _ml_a][0] or None
+        else:
+            st.caption("Consolidado geral")
+            _month_a = None
+
+    with col_b:
+        st.markdown("##### Período B  *(base de comparação)*")
+        _yl_b = st.selectbox("Ano", _year_opts_ah,
+                             index=min(2, len(_year_opts_ah)-1), key="ah_year_b")
+        _year_b = None if _yl_b == "Todos os anos" else int(_yl_b)
+        if _year_b:
+            _ml_b = st.selectbox("Mês", list(_month_opts_ah.values()), key="ah_month_b")
+            _month_b = [k for k, v in _month_opts_ah.items() if v == _ml_b][0] or None
+        else:
+            st.caption("Consolidado geral")
+            _month_b = None
+
+    _label_a = _periodo_label(_year_a, _month_a)
+    _label_b = _periodo_label(_year_b, _month_b)
+
+    st.divider()
+
+    _txs_a = db.get_transactions(month=_month_a, year=_year_a)
+    _txs_b = db.get_transactions(month=_month_b, year=_year_b)
+    _dre_a = calculate_dre(_txs_a)
+    _dre_b = calculate_dre(_txs_b)
+
+    _by_a = {r["label"]: r.get("amount") for r in _dre_a}
+    _by_b = {r["label"]: r.get("amount") for r in _dre_b}
+    _rec_a = _by_a.get("RECEITA BRUTA") or 0
+    _rec_b = _by_b.get("RECEITA BRUTA") or 0
+
+    def _fv(v):
+        return f"{v:,.2f}" if v is not None else "—"
+
+    def _fav(v, base):
+        return f"{v/base*100:.1f}%" if (base and v is not None) else "—"
+
+    def _fvar(a, b, row_type):
+        a = a or 0; b = b or 0
+        dif = a - b
+        pct = (dif / abs(b) * 100) if b != 0 else None
+        dif_s = f"{dif:+,.2f}"
+        pct_s = f"{pct:+.1f}%" if pct is not None else "—"
+        # Custos: redução é positivo (verde); receitas/resultados: aumento é positivo
+        good = dif <= 0 if row_type == "cost" else dif >= 0
+        color = "#166534" if good else "#991b1b"
+        return dif_s, pct_s, color
+
+    # Grid: label | R$A | AV%A | R$B | AV%B | Var R$ | Var%
+    _G = ("display:grid;grid-template-columns:2.4fr 1fr 0.55fr 1fr 0.55fr 0.95fr 0.65fr;"
+          "gap:0 6px;align-items:center;")
+
+    # Cabeçalho
+    st.markdown(
+        f'<div style="{_G}font-weight:700;font-size:0.78em;color:#6B7280;'
+        f'border-bottom:2px solid #8B1A4A;padding:4px 4px 6px 4px;">'
+        f'<span></span>'
+        f'<span style="text-align:right;display:block">{_label_a}</span>'
+        f'<span style="text-align:right;display:block">AV%</span>'
+        f'<span style="text-align:right;display:block">{_label_b}</span>'
+        f'<span style="text-align:right;display:block">AV%</span>'
+        f'<span style="text-align:right;display:block">Var. R$</span>'
+        f'<span style="text-align:right;display:block">Var. %</span>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    for _entry in _dre_a:
+        _t = _entry["type"]
+        _lbl = _entry["label"]
+        _lvl = _entry["level"]
+        _va = _by_a.get(_lbl)
+        _vb = _by_b.get(_lbl)
+
+        if _t == "section":
+            st.markdown(
+                f'<div style="font-weight:700;padding:10px 4px 2px 4px;'
+                f'border-top:2px solid #F0D6E4;margin-top:4px;">{_lbl}</div>',
+                unsafe_allow_html=True,
+            )
+            continue
+
+        _ds, _ps, _color = _fvar(_va, _vb, _t)
+        _bold = "font-weight:700;" if _t in ("subtotal", "result") else ""
+        _border = "border-top:1px solid #e9d5ff;" if _t in ("subtotal", "result") else ""
+        _pad = f"padding-left:{_lvl*14}px;" if _t not in ("subtotal","result") else ""
+
+        st.markdown(
+            f'<div style="{_G}{_bold}{_border}padding:3px 4px;">'
+            f'<span style="{_pad}">{_lbl}</span>'
+            f'<span style="text-align:right;display:block">R$ {_fv(_va)}</span>'
+            f'<span style="text-align:right;display:block;color:#9CA3AF;font-size:0.83em">'
+            f'{_fav(_va,_rec_a)}</span>'
+            f'<span style="text-align:right;display:block">R$ {_fv(_vb)}</span>'
+            f'<span style="text-align:right;display:block;color:#9CA3AF;font-size:0.83em">'
+            f'{_fav(_vb,_rec_b)}</span>'
+            f'<span style="text-align:right;display:block;color:{_color}">{_ds}</span>'
+            f'<span style="text-align:right;display:block;color:{_color};font-weight:700">'
+            f'{_ps}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    if not _txs_a and not _txs_b:
+        st.info("Nenhum lançamento encontrado para os períodos selecionados.")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TAB 5 — REGRAS
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_regras:
     st.subheader("Regras de categorização automática")
