@@ -106,6 +106,141 @@ with tab_upload:
 
     st.divider()
 
+    # ── Importação histórica ─────────────────────────────────────────────────
+    with st.expander("📊 Importar histórico (planilha DRE por mês)"):
+        st.caption(
+            "Planilha com coluna **Mês** (ex: 01/2023) e colunas de categoria. "
+            "Valores positivos — despesas são negadas automaticamente."
+        )
+
+        _HIST_COL_MAP = {
+            "RECEITA BRUTA":        ("RECEITA BRUTA",          1),
+            "IMPOSTO":              ("SIMPLES NACIONAL",       -1),
+            "MATERIAL":             ("MATERIAL",               -1),
+            "AVIAMENTO":            ("AVIAMENTO",              -1),
+            "ETIQUETA":             ("ETIQUETA",               -1),
+            "ALÇA":                 ("ALÇA",                   -1),
+            "FACÇÃO":               ("FACÇÃO",                 -1),
+            "TALHAÇÃO":             ("TALHAÇÃO",               -1),
+            "EMBALAGEM":            ("EMBALAGEM",              -1),
+            "FRETE PRODUÇÃO":       ("FRETE PRODUÇÃO",         -1),
+            "FRETE PEDIDO":         ("FRETE PEDIDO",           -1),
+            "CONTABILIDADE":        ("CONTABILIDADE",          -1),
+            "ECOMMERCE":            ("ECOMMERCE",              -1),
+            "MATERIAIS EXPEDIENTE": ("MATERIAIS EXPEDIENTE",   -1),
+            "TRÁFEGO":              ("TRÁFEGO",                -1),
+            "SERVIÇOS MKT/EVENTOS": ("SERVIÇOS MKT/EVENTOS",  -1),
+            "ENERGIA":              ("ENERGIA",                -1),
+            "CONDOMINIO":           ("CONDOMÍNIO",             -1),
+            "ALUGUEL":              ("ALUGUEL",                -1),
+            "TRANSPORTE":           ("TRANSPORTE",             -1),
+            "INTERNET":             ("INTERNET",               -1),
+            "SALÁRIO":              ("SALÁRIO",                -1),
+            "OUTROS":               ("OUTROS",                 -1),
+        }
+
+        def _parse_mes(val):
+            import re as _re
+            from datetime import datetime as _dt
+            _months = {"jan":1,"fev":2,"mar":3,"abr":4,"mai":5,"jun":6,
+                       "jul":7,"ago":8,"set":9,"out":10,"nov":11,"dez":12}
+            if isinstance(val, (_dt, pd.Timestamp)):
+                return int(val.year), int(val.month)
+            s = str(val).strip()
+            m = _re.match(r"^(\d{1,2})[/\-](\d{4})$", s)
+            if m: return int(m.group(2)), int(m.group(1))
+            m = _re.match(r"^(\d{4})[/\-](\d{1,2})$", s)
+            if m: return int(m.group(1)), int(m.group(2))
+            m = _re.match(r"^([a-zçã]+)[./\-\s]?(\d{4})$", s, _re.I)
+            if m:
+                mn = _months.get(m.group(1).lower()[:3])
+                if mn: return int(m.group(2)), mn
+            try:
+                d = pd.to_datetime(val)
+                return int(d.year), int(d.month)
+            except Exception:
+                return None, None
+
+        hist_file = st.file_uploader(
+            "Selecione a planilha histórica",
+            type=["xlsx", "xls", "csv"],
+            key="hist_uploader",
+        )
+
+        if hist_file:
+            try:
+                ext = hist_file.name.lower().rsplit(".", 1)[-1]
+                if ext == "csv":
+                    df_hist = pd.read_csv(hist_file)
+                else:
+                    df_hist = pd.read_excel(hist_file)
+
+                # Normaliza nomes de colunas
+                df_hist.columns = [str(c).strip().upper() for c in df_hist.columns]
+
+                # Encontra coluna de mês
+                mes_col = next((c for c in df_hist.columns if "MÊS" in c or "MES" in c), None)
+                if not mes_col:
+                    st.error("Coluna 'Mês' não encontrada na planilha.")
+                else:
+                    hist_rows = []
+                    erros = []
+                    for _, row in df_hist.iterrows():
+                        year, month = _parse_mes(row[mes_col])
+                        if not year:
+                            erros.append(f"Mês inválido: {row[mes_col]}")
+                            continue
+                        date_str = f"{year}-{month:02d}-01"
+                        for col, (cat, sign) in _HIST_COL_MAP.items():
+                            # Aceita variações com/sem acento
+                            match = next((c for c in df_hist.columns if c == col
+                                          or c.replace("Ã","A").replace("Á","A")
+                                             .replace("É","E").replace("Ç","C")
+                                             .replace("Ó","O").replace("Ú","U")
+                                          == col.replace("Ã","A").replace("Á","A")
+                                             .replace("É","E").replace("Ç","C")
+                                             .replace("Ó","O").replace("Ú","U")), None)
+                            if not match or pd.isna(row.get(match)):
+                                continue
+                            try:
+                                val = float(str(row[match]).replace(",", ".").replace(" ", ""))
+                            except Exception:
+                                continue
+                            if val == 0:
+                                continue
+                            amount = round(val * sign, 2)
+                            hist_rows.append({
+                                "date": date_str,
+                                "description": f"Histórico {cat}",
+                                "amount": amount,
+                                "category": cat,
+                                "source_file": hist_file.name,
+                                "month": month,
+                                "year": year,
+                            })
+
+                    if erros:
+                        for e in erros:
+                            st.warning(e)
+
+                    if not hist_rows:
+                        st.error("Nenhum lançamento encontrado na planilha.")
+                    else:
+                        meses = sorted({(r["year"], r["month"]) for r in hist_rows})
+                        st.success(
+                            f"**{len(hist_rows)} lançamentos** em **{len(meses)} meses** "
+                            f"({meses[0][1]:02d}/{meses[0][0]} a {meses[-1][1]:02d}/{meses[-1][0]}). "
+                            "Clique em Importar para gravar."
+                        )
+                        if st.button("✅ Importar histórico", type="primary", key="btn_hist"):
+                            inserted, skipped = db.insert_transactions(hist_rows)
+                            st.success(f"Importados: **{inserted}** | Duplicados ignorados: **{skipped}**")
+
+            except Exception as e:
+                st.error(f"Erro ao ler planilha: {e}")
+
+    st.divider()
+
     if "uploader_key" not in st.session_state:
         st.session_state.uploader_key = 0
     if "import_msg" in st.session_state and st.session_state.import_msg:
