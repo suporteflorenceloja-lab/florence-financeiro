@@ -444,15 +444,21 @@ with tab_dre:
     st.subheader("Demonstração do Resultado — DRE")
 
     years = db.get_available_years() or [pd.Timestamp.now().year]
+    year_opts = ["Todos os anos"] + [str(y) for y in years]
     col1, col2 = st.columns(2)
     with col1:
-        dre_year = st.selectbox("Ano", years, key="dre_year")
+        dre_year_label = st.selectbox("Ano", year_opts, key="dre_year")
+        dre_year = None if dre_year_label == "Todos os anos" else int(dre_year_label)
     with col2:
-        month_opts_dre = {0: "Acumulado no ano"} | MONTHS_PT
-        dre_month_label = st.selectbox(
-            "Mês", list(month_opts_dre.values()), key="dre_month"
-        )
-        dre_month = [k for k, v in month_opts_dre.items() if v == dre_month_label][0]
+        if dre_year is None:
+            st.selectbox("Mês", ["Consolidado geral"], key="dre_month", disabled=True)
+            dre_month = None
+        else:
+            month_opts_dre = {0: "Acumulado no ano"} | MONTHS_PT
+            dre_month_label = st.selectbox(
+                "Mês", list(month_opts_dre.values()), key="dre_month"
+            )
+            dre_month = [k for k, v in month_opts_dre.items() if v == dre_month_label][0]
 
     txs = db.get_transactions(
         month=dre_month or None,
@@ -539,12 +545,17 @@ with tab_dre:
 
     # Export button
     if txs:
-        excel_bytes = export_excel(dre_rows, dre_month or 0, dre_year)
-        month_label = dre_month_label.replace(" ", "_")
+        excel_bytes = export_excel(dre_rows, dre_month or 0, dre_year or 0)
+        if dre_year is None:
+            file_label = "Consolidado"
+        elif dre_month:
+            file_label = f"{MONTHS_PT[dre_month]}_{dre_year}"
+        else:
+            file_label = str(dre_year)
         st.download_button(
             label="📥 Baixar DRE em Excel",
             data=excel_bytes,
-            file_name=f"DRE_Florence_{month_label}_{dre_year}.xlsx",
+            file_name=f"DRE_Florence_{file_label}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
     else:
