@@ -451,19 +451,19 @@ with tab_dre:
         dre_year = None if dre_year_label == "Todos os anos" else int(dre_year_label)
     with col2:
         if dre_year is None:
-            st.selectbox("Mês", ["Consolidado geral"], key="dre_month", disabled=True)
-            dre_month = None
+            st.multiselect("Mês(es)", [], disabled=True,
+                           placeholder="Consolidado geral", key="dre_months")
+            dre_months = []
         else:
-            month_opts_dre = {0: "Acumulado no ano"} | MONTHS_PT
-            dre_month_label = st.selectbox(
-                "Mês", list(month_opts_dre.values()), key="dre_month"
+            dre_months = st.multiselect(
+                "Mês(es)",
+                options=list(MONTHS_PT.keys()),
+                format_func=lambda k: MONTHS_PT[k],
+                placeholder="Todos os meses (acumulado no ano)",
+                key="dre_months",
             )
-            dre_month = [k for k, v in month_opts_dre.items() if v == dre_month_label][0]
 
-    txs = db.get_transactions(
-        month=dre_month or None,
-        year=dre_year,
-    )
+    txs = db.get_transactions(months=dre_months or None, year=dre_year)
 
     dre_rows = calculate_dre(txs)
 
@@ -545,11 +545,11 @@ with tab_dre:
 
     # Export button
     if txs:
-        excel_bytes = export_excel(dre_rows, dre_month or 0, dre_year or 0)
+        excel_bytes = export_excel(dre_rows, 0, dre_year or 0)
         if dre_year is None:
             file_label = "Consolidado"
-        elif dre_month:
-            file_label = f"{MONTHS_PT[dre_month]}_{dre_year}"
+        elif dre_months:
+            file_label = "_".join(MONTHS_PT[m][:3] for m in sorted(dre_months)) + f"_{dre_year}"
         else:
             file_label = str(dre_year)
         st.download_button(
@@ -571,10 +571,11 @@ with tab_ah:
     _year_opts_ah = ["Todos os anos"] + [str(y) for y in _years_ah]
     _month_opts_ah = {0: "Acumulado no ano"} | MONTHS_PT
 
-    def _periodo_label(year, month):
+    def _periodo_label(year, months):
         if year is None: return "Todos os anos"
-        if month: return f"{MONTHS_PT[month]} {year}"
-        return str(year)
+        if not months: return str(year)
+        if len(months) == 1: return f"{MONTHS_PT[months[0]]} {year}"
+        return "/".join(MONTHS_PT[m][:3] for m in sorted(months)) + f" {year}"
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -583,11 +584,12 @@ with tab_ah:
                              index=min(1, len(_year_opts_ah)-1), key="ah_year_a")
         _year_a = None if _yl_a == "Todos os anos" else int(_yl_a)
         if _year_a:
-            _ml_a = st.selectbox("Mês", list(_month_opts_ah.values()), key="ah_month_a")
-            _month_a = [k for k, v in _month_opts_ah.items() if v == _ml_a][0] or None
+            _months_a = st.multiselect("Mês(es)", options=list(MONTHS_PT.keys()),
+                                       format_func=lambda k: MONTHS_PT[k],
+                                       placeholder="Todos os meses", key="ah_months_a")
         else:
             st.caption("Consolidado geral")
-            _month_a = None
+            _months_a = []
 
     with col_b:
         st.markdown("##### Período B  *(base de comparação)*")
@@ -595,19 +597,20 @@ with tab_ah:
                              index=min(2, len(_year_opts_ah)-1), key="ah_year_b")
         _year_b = None if _yl_b == "Todos os anos" else int(_yl_b)
         if _year_b:
-            _ml_b = st.selectbox("Mês", list(_month_opts_ah.values()), key="ah_month_b")
-            _month_b = [k for k, v in _month_opts_ah.items() if v == _ml_b][0] or None
+            _months_b = st.multiselect("Mês(es)", options=list(MONTHS_PT.keys()),
+                                       format_func=lambda k: MONTHS_PT[k],
+                                       placeholder="Todos os meses", key="ah_months_b")
         else:
             st.caption("Consolidado geral")
-            _month_b = None
+            _months_b = []
 
-    _label_a = _periodo_label(_year_a, _month_a)
-    _label_b = _periodo_label(_year_b, _month_b)
+    _label_a = _periodo_label(_year_a, _months_a)
+    _label_b = _periodo_label(_year_b, _months_b)
 
     st.divider()
 
-    _txs_a = db.get_transactions(month=_month_a, year=_year_a)
-    _txs_b = db.get_transactions(month=_month_b, year=_year_b)
+    _txs_a = db.get_transactions(months=_months_a or None, year=_year_a)
+    _txs_b = db.get_transactions(months=_months_b or None, year=_year_b)
     _dre_a = calculate_dre(_txs_a)
     _dre_b = calculate_dre(_txs_b)
 

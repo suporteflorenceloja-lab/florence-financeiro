@@ -58,10 +58,13 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
     return inserted, skipped
 
 
-def get_transactions(month: int = None, year: int = None, category: str = None) -> list[dict]:
+def get_transactions(month: int = None, year: int = None, category: str = None,
+                     months: list = None) -> list[dict]:
     sb = _client()
     query = sb.table("transactions").select("*").order("date", desc=True)
-    if month:
+    if months:
+        query = query.in_("month", months)
+    elif month:
         query = query.eq("month", month)
     if year:
         query = query.eq("year", year)
