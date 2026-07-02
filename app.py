@@ -288,7 +288,9 @@ with tab_upload:
         def _should_skip(desc: str) -> bool:
             return any(kw.upper() in desc.upper() for kw in SKIP_DESCRIPTIONS)
 
-        all_rows = [r for r in all_rows if not _should_skip(r["description"])]
+        # Marca pré-selecionados para exclusão, mas mantém na lista para o usuário decidir
+        for r in all_rows:
+            r["_skip"] = _should_skip(r["description"])
         all_rows = categorize(all_rows, db.get_rules())
 
         st.session_state.preview_rows = all_rows
@@ -317,7 +319,8 @@ with tab_upload:
             "amount": "Valor (R$)", "category": "Categoria",
             "source_file": "Arquivo",
         })
-        preview_df.insert(0, "Excluir", False)
+        skip_flags = [r.get("_skip", False) for r in st.session_state.preview_rows]
+        preview_df.insert(0, "Excluir", skip_flags)
 
         # Chave dinâmica — muda a cada remoção, forçando widget limpo sem cache antigo
         editor_key = f"preview_editor_{n}"
