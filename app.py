@@ -326,25 +326,34 @@ with tab_upload:
                 },
                 hide_index=True,
                 use_container_width=True,
-                num_rows="fixed",
+                num_rows="dynamic",
                 key="preview_editor",
             )
 
             if st.button("✅ Importar lançamentos", type="primary"):
                 rules_saved = 0
-                for i, row in enumerate(all_rows):
-                    new_cat = edited.iloc[i]["Categoria"]
-                    row["category"] = new_cat
-                    # Auto-save rule: first word(s) of description as keyword
-                    if new_cat not in ("OUTROS", "RECEITA BRUTA"):
-                        keyword = _extract_keyword(row["description"])
+                # Usa o editor como fonte — linhas excluídas pelo usuário não aparecem
+                final_rows = []
+                for _, erow in edited.iterrows():
+                    # Encontra o row original pela descrição+data para manter metadados
+                    match = next(
+                        (r for r in all_rows
+                         if r["description"] == erow["Descrição"] and r["date"] == erow["Data"]),
+                        None,
+                    )
+                    if match is None:
+                        continue
+                    match["category"] = erow["Categoria"]
+                    final_rows.append(match)
+                    if erow["Categoria"] not in ("OUTROS", "RECEITA BRUTA"):
+                        keyword = _extract_keyword(match["description"])
                         if keyword:
                             existing = [r["keyword"] for r in db.get_rules()]
                             if keyword not in existing:
-                                db.add_rule(keyword, new_cat)
+                                db.add_rule(keyword, erow["Categoria"])
                                 rules_saved += 1
 
-                inserted, skipped = db.insert_transactions(all_rows)
+                inserted, skipped = db.insert_transactions(final_rows)
                 msg = f"Importados: **{inserted}** | Duplicados ignorados: **{skipped}**"
                 if rules_saved:
                     msg += f" | **{rules_saved} regras** criadas automaticamente"
