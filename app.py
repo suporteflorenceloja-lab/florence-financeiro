@@ -322,6 +322,9 @@ with tab_upload:
         })
         preview_df.insert(0, "Excluir", False)
 
+        # Chave dinâmica — muda a cada remoção, forçando widget limpo sem cache antigo
+        editor_key = f"preview_editor_{n}"
+
         edited = st.data_editor(
             preview_df,
             column_config={
@@ -337,18 +340,25 @@ with tab_upload:
             hide_index=True,
             use_container_width=True,
             num_rows="fixed",
-            key="preview_editor",
+            key=editor_key,
         )
 
         col_rem, col_imp, col_cancel = st.columns([1, 1, 3])
 
         with col_rem:
             if st.button("🗑️ Remover marcados", type="secondary"):
+                # Persiste alterações de categoria antes de filtrar
+                for i, row in enumerate(st.session_state.preview_rows):
+                    row["category"] = edited.iloc[i]["Categoria"]
+                # Remove linhas marcadas
                 keep = [not bool(edited.iloc[i]["Excluir"])
                         for i in range(len(st.session_state.preview_rows))]
                 st.session_state.preview_rows = [
                     r for r, k in zip(st.session_state.preview_rows, keep) if k
                 ]
+                # Limpa cache do editor antigo
+                if editor_key in st.session_state:
+                    del st.session_state[editor_key]
                 st.rerun()
 
         with col_imp:
