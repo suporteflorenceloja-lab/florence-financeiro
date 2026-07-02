@@ -143,23 +143,38 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
         return (not date_pat.match(line) and not two_nums.search(line)
                 and not skip_line.match(line) and bool(line))
 
-    # Passo 1: coleta todas as linhas de transação
-    txn_lines: list[tuple[int, object, float, str]] = []
+    # Passo 1: coleta todas as linhas de transação (com saldo para inferir débito/crédito)
+    txn_lines: list[tuple[int, object, float, float, str]] = []
     for i, line in enumerate(lines):
         date_m = date_pat.match(line)
         amt_m = two_nums.search(line)
         if date_m and amt_m:
             dt = _parse_date_str(date_m.group(1))
-            amount = _parse_amount(amt_m.group(1))
+            raw_amount  = _parse_amount(amt_m.group(1))  # valor da transação (sempre positivo no PDF)
+            raw_balance = _parse_amount(amt_m.group(2))  # saldo após a transação
             mid = line[date_m.end():amt_m.start()].strip()
             mid = re.sub(r"^\d{5,}\s*", "", mid).strip()
-            txn_lines.append((i, dt, amount, mid))
+            txn_lines.append((i, dt, raw_amount, raw_balance, mid))
 
     txn_idx_set = {t[0] for t in txn_lines}
     consumed: set[int] = set()
 
     # Passo 2: para cada transação, monta a descrição a partir das linhas vizinhas
-    for tidx, (line_idx, dt, amount, inline_desc) in enumerate(txn_lines):
+    for tidx, (line_idx, dt, raw_amount, raw_balance, inline_desc) in enumerate(txn_lines):
+        # Determina sinal via comparação de saldos consecutivos:
+        # saldo diminuiu → débito (despesa, negativo); saldo aumentou → crédito (receita, positivo)
+        if raw_amount < 0:
+            # PDF já trouxe sinal explícito — respeita
+            amount = raw_amount
+        elif tidx > 0:
+            prev_balance = txn_lines[tidx - 1][3]
+            amount = -abs(raw_amount) if raw_balance < prev_balance else abs(raw_amount)
+        else:
+            # Primeira transação sem saldo anterior: usa palavras-chave para determinar
+            _income_kw = ("RECEBID", "CREDITAD", "DEPÓSITO", "DEPOSITO", "RESTITUI")
+            desc_upper = inline_desc.upper()
+            amount = abs(raw_amount) if any(k in desc_upper for k in _income_kw) else -abs(raw_amount)
+
         if not dt or amount == 0.0:
             continue
 

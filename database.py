@@ -83,6 +83,27 @@ def delete_transaction(transaction_id: int):
     sb.table("transactions").delete().eq("id", transaction_id).execute()
 
 
+def get_distinct_source_files() -> list[str]:
+    sb = _client()
+    result = sb.table("transactions").select("source_file").execute()
+    seen = set()
+    files = []
+    for r in result.data:
+        sf = r.get("source_file") or ""
+        if sf and sf not in seen:
+            seen.add(sf)
+            files.append(sf)
+    return sorted(files)
+
+
+def delete_by_source_files(source_files: list[str]) -> int:
+    if not source_files:
+        return 0
+    sb = _client()
+    result = sb.table("transactions").delete().in_("source_file", source_files).execute()
+    return len(result.data) if result.data else 0
+
+
 def get_rules() -> list[dict]:
     sb = _client()
     return sb.table("rules").select("*").order("priority", desc=True).order("keyword").execute().data

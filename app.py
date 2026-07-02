@@ -437,6 +437,26 @@ with tab_lancamentos:
             total = df["Valor (R$)"].sum()
             st.caption(f"**{len(txs)}** lançamentos · Total: **R$ {total:,.2f}**")
 
+    with st.expander("🗑️ Excluir lançamentos por arquivo de origem"):
+        all_sources = db.get_distinct_source_files()
+        file_sources = [s for s in all_sources if s != "manual"]
+        if not file_sources:
+            st.info("Nenhum arquivo de origem encontrado.")
+        else:
+            to_delete = st.multiselect(
+                "Selecione os arquivos para excluir todos os seus lançamentos",
+                options=file_sources,
+                key="del_sources",
+            )
+            if to_delete:
+                st.warning(
+                    f"Isso excluirá **todos** os lançamentos dos {len(to_delete)} arquivo(s) selecionado(s)."
+                )
+                if st.button("🗑️ Confirmar exclusão", type="primary", key="btn_del_sources"):
+                    deleted = db.delete_by_source_files(to_delete)
+                    st.success(f"{deleted} lançamento(s) excluídos.")
+                    st.rerun()
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 3 — DRE
 # ═══════════════════════════════════════════════════════════════════════════
