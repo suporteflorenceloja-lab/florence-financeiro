@@ -66,16 +66,19 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         full_text = "\n".join(all_text_pages)
         full_text_norm = _normalize_text(full_text)
 
-        is_nubank    = "nubank"    in full_text.lower() or "nubank"    in filename.lower()
-        is_santander = (not is_nubank) and ("santander" in full_text.lower() or "santander" in filename.lower())
+        ft_low = full_text.lower()
+        fn_low = filename.lower()
+        is_nubank    = "nubank" in ft_low or "nubank" in fn_low or \
+                       "nu pagamentos" in ft_low or "nu.com.br" in ft_low
+        is_santander = (not is_nubank) and ("santander" in ft_low or "santander" in fn_low)
         is_extrato_cc = is_santander and bool(re.search(r"per[ií]odos?:|agência:|conta:\s*\d", full_text, re.I))
         is_nubank_extrato = is_nubank and bool(re.search(r"movimenta[çc][õo]es", full_text, re.I))
 
         if is_nubank_extrato:
-            # Nubank conta corrente — sinais já corretos no parser (entradas +, saídas -)
+            # Nubank conta corrente — sinais já corretos (entradas +, saídas -)
             rows = _parse_nubank_extrato(full_text_norm or full_text, filename)
         elif is_nubank:
-            # Nubank fatura de cartão — despesas positivas, inverter para negativo
+            # Nubank fatura — despesas positivas no PDF, inverter para negativo
             rows = _parse_nubank_fatura(full_text_norm or full_text, filename)
             for r in rows:
                 r["amount"] = -r["amount"]
@@ -85,9 +88,10 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
             rows = _parse_text(full_text_norm, filename)
             if not rows:
                 rows = _parse_text(full_text, filename)
-            # Santander fatura de cartão: débitos positivos — inverter para negativo
-            if is_santander:
-                for r in rows:
+            # Qualquer arquivo não identificado (fatura de cartão genérica, etc.):
+            # valores positivos são despesas — inverter para negativo
+            for r in rows:
+                if r["amount"] > 0:
                     r["amount"] = -r["amount"]
 
         # Remove zero-amount or empty-description rows
