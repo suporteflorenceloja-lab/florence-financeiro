@@ -259,8 +259,8 @@ with tab_upload:
         key=f"uploader_{st.session_state.uploader_key}",
     )
 
-    # Quando novos arquivos chegam, faz o parse e armazena no session_state
-    if uploaded:
+    # Só faz o parse quando não há preview ativo — evita reset ao rerun com arquivo ainda carregado
+    if uploaded and not st.session_state.preview_rows:
         all_rows: list[dict] = []
         errors: list[str] = []
         pdf_diagnostics: list[tuple[str, str]] = []
@@ -302,9 +302,6 @@ with tab_upload:
     # ── Preview persistente ──────────────────────────────────────────────────
     if st.session_state.preview_rows:
         n = len(st.session_state.preview_rows)
-
-        if not all_rows if uploaded else True:
-            pass  # já exibiu erro acima se all_rows estava vazio
 
         st.info(
             f"**{n} lançamento(s) encontrado(s).** "
@@ -392,7 +389,7 @@ with tab_upload:
                 st.session_state.uploader_key += 1
                 st.rerun()
 
-    elif uploaded and not st.session_state.preview_rows:
+    elif uploaded and not st.session_state.preview_rows and not st.session_state.get("import_msg"):
         st.error("Nenhum lançamento encontrado nos arquivos enviados.")
 
 # ═══════════════════════════════════════════════════════════════════════════
