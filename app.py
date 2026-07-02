@@ -243,6 +243,10 @@ with tab_upload:
 
     if "uploader_key" not in st.session_state:
         st.session_state.uploader_key = 0
+    if "preview_rows" not in st.session_state:
+        st.session_state.preview_rows = []
+    if "pdf_diags" not in st.session_state:
+        st.session_state.pdf_diags = []
     if "import_msg" in st.session_state and st.session_state.import_msg:
         st.success(st.session_state.import_msg)
         st.session_state.import_msg = None
@@ -255,10 +259,11 @@ with tab_upload:
         key=f"uploader_{st.session_state.uploader_key}",
     )
 
+    # Quando novos arquivos chegam, faz o parse e armazena no session_state
     if uploaded:
         all_rows: list[dict] = []
         errors: list[str] = []
-        pdf_diagnostics: list[tuple[str, str]] = []  # (filename, raw_text)
+        pdf_diagnostics: list[tuple[str, str]] = []
 
         for f in uploaded:
             file_bytes = f.read()
@@ -277,90 +282,108 @@ with tab_upload:
             except Exception as e:
                 errors.append(f"{f.name}: {e}")
 
-        if errors:
-            for err in errors:
-                st.warning(f"⚠️ {err}")
+        for err in errors:
+            st.warning(f"⚠️ {err}")
 
-        # Diagnóstico sempre visível para PDFs (ajuda a depurar layout)
-        for fname, diag in pdf_diagnostics:
-            with st.expander(f"🔍 Texto extraído de {fname}"):
-                st.code(diag or "(PDF sem texto)", language="text")
+        def _should_skip(desc: str) -> bool:
+            return any(kw.upper() in desc.upper() for kw in SKIP_DESCRIPTIONS)
 
-        if not all_rows:
-            st.error("Nenhum lançamento encontrado nos arquivos enviados.")
-        else:
-            # Remove lançamentos irrelevantes
-            def _should_skip(desc: str) -> bool:
-                desc_upper = desc.upper()
-                return any(kw.upper() in desc_upper for kw in SKIP_DESCRIPTIONS)
-            skipped_auto = sum(1 for r in all_rows if _should_skip(r["description"]))
-            all_rows = [r for r in all_rows if not _should_skip(r["description"])]
-            if skipped_auto:
-                st.caption(f"{skipped_auto} lançamento(s) ignorados automaticamente.")
+        all_rows = [r for r in all_rows if not _should_skip(r["description"])]
+        all_rows = categorize(all_rows, db.get_rules())
 
-            # Apply rules + AI categorization
-            rules = db.get_rules()
-            all_rows = categorize(all_rows, rules)
+        st.session_state.preview_rows = all_rows
+        st.session_state.pdf_diags = pdf_diagnostics
 
-            st.success(f"**{len(all_rows)} lançamentos** encontrados. Revise as categorias abaixo e clique em Importar.")
+    # Diagnóstico de PDFs (visível enquanto o preview estiver ativo)
+    for fname, diag in st.session_state.pdf_diags:
+        with st.expander(f"🔍 Texto extraído de {fname}"):
+            st.code(diag or "(PDF sem texto)", language="text")
 
-            # Editable preview
-            preview_df = pd.DataFrame(all_rows)[
-                ["date", "description", "amount", "category", "source_file"]
-            ].rename(columns={
-                "date": "Data", "description": "Descrição",
-                "amount": "Valor (R$)", "category": "Categoria",
-                "source_file": "Arquivo",
-            })
+    # ── Preview persistente ──────────────────────────────────────────────────
+    if st.session_state.preview_rows:
+        n = len(st.session_state.preview_rows)
 
-            edited = st.data_editor(
-                preview_df,
-                column_config={
-                    "Categoria": st.column_config.SelectboxColumn(
-                        "Categoria", options=CATEGORIES, required=True
-                    ),
-                    "Valor (R$)": st.column_config.NumberColumn(
-                        "Valor (R$)", format="R$ %.2f"
-                    ),
-                    "Data": st.column_config.TextColumn("Data"),
-                },
-                hide_index=True,
-                use_container_width=True,
-                num_rows="dynamic",
-                key="preview_editor",
-            )
+        if not all_rows if uploaded else True:
+            pass  # já exibiu erro acima se all_rows estava vazio
 
+        st.info(
+            f"**{n} lançamento(s) encontrado(s).** "
+            "Marque ✅ na coluna **Excluir** em qualquer linha indesejada "
+            "e clique em **Remover marcados** — ela sai imediatamente da lista. "
+            "Quando a lista estiver certa, clique em **Importar lançamentos**."
+        )
+
+        preview_df = pd.DataFrame(st.session_state.preview_rows)[
+            ["date", "description", "amount", "category", "source_file"]
+        ].rename(columns={
+            "date": "Data", "description": "Descrição",
+            "amount": "Valor (R$)", "category": "Categoria",
+            "source_file": "Arquivo",
+        })
+        preview_df.insert(0, "Excluir", False)
+
+        edited = st.data_editor(
+            preview_df,
+            column_config={
+                "Excluir": st.column_config.CheckboxColumn("Excluir", default=False),
+                "Categoria": st.column_config.SelectboxColumn(
+                    "Categoria", options=CATEGORIES, required=True
+                ),
+                "Valor (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
+                "Data":       st.column_config.TextColumn(disabled=True),
+                "Descrição":  st.column_config.TextColumn(disabled=True),
+                "Arquivo":    st.column_config.TextColumn(disabled=True),
+            },
+            hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            key="preview_editor",
+        )
+
+        col_rem, col_imp, col_cancel = st.columns([1, 1, 3])
+
+        with col_rem:
+            if st.button("🗑️ Remover marcados", type="secondary"):
+                keep = [not bool(edited.iloc[i]["Excluir"])
+                        for i in range(len(st.session_state.preview_rows))]
+                st.session_state.preview_rows = [
+                    r for r, k in zip(st.session_state.preview_rows, keep) if k
+                ]
+                st.rerun()
+
+        with col_imp:
             if st.button("✅ Importar lançamentos", type="primary"):
                 rules_saved = 0
-                # Usa o editor como fonte — linhas excluídas pelo usuário não aparecem
                 final_rows = []
-                for _, erow in edited.iterrows():
-                    # Encontra o row original pela descrição+data para manter metadados
-                    match = next(
-                        (r for r in all_rows
-                         if r["description"] == erow["Descrição"] and r["date"] == erow["Data"]),
-                        None,
-                    )
-                    if match is None:
-                        continue
-                    match["category"] = erow["Categoria"]
-                    final_rows.append(match)
-                    if erow["Categoria"] not in ("OUTROS", "RECEITA BRUTA"):
-                        keyword = _extract_keyword(match["description"])
-                        if keyword:
-                            existing = [r["keyword"] for r in db.get_rules()]
-                            if keyword not in existing:
-                                db.add_rule(keyword, erow["Categoria"])
-                                rules_saved += 1
+                for i, row in enumerate(st.session_state.preview_rows):
+                    row["category"] = edited.iloc[i]["Categoria"]
+                    final_rows.append(row)
+                    if row["category"] not in ("OUTROS", "RECEITA BRUTA"):
+                        kw = _extract_keyword(row["description"])
+                        if kw and kw not in [r["keyword"] for r in db.get_rules()]:
+                            db.add_rule(kw, row["category"])
+                            rules_saved += 1
 
                 inserted, skipped = db.insert_transactions(final_rows)
                 msg = f"Importados: **{inserted}** | Duplicados ignorados: **{skipped}**"
                 if rules_saved:
                     msg += f" | **{rules_saved} regras** criadas automaticamente"
                 st.session_state.import_msg = msg
+                st.session_state.preview_rows = []
+                st.session_state.pdf_diags = []
                 st.session_state.uploader_key += 1
                 st.balloons()
                 st.rerun()
+
+        with col_cancel:
+            if st.button("✖ Cancelar upload", type="secondary"):
+                st.session_state.preview_rows = []
+                st.session_state.pdf_diags = []
+                st.session_state.uploader_key += 1
+                st.rerun()
+
+    elif uploaded and not st.session_state.preview_rows:
+        st.error("Nenhum lançamento encontrado nos arquivos enviados.")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TAB 2 — LANÇAMENTOS
