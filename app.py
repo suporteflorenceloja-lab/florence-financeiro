@@ -833,13 +833,37 @@ with tab_sim:
         )
 
         st.markdown("##### Custos Variáveis")
+        st.caption("Edite o **%** — o valor em R$ recalcula automaticamente com a receita.")
+        # Cabeçalho das colunas
+        _hc1, _hc2, _hc3 = st.columns([3, 1.5, 2])
+        _hc2.markdown("<small style='color:#6B7280'>% receita</small>", unsafe_allow_html=True)
+        _hc3.markdown("<small style='color:#6B7280'>R$ calculado</small>", unsafe_allow_html=True)
+
         _var_vals: dict[str, float] = {}
         for _cat in _VAR_CATS:
             _h = abs(_avg.get(_cat, 0))
-            _var_vals[_cat] = st.number_input(
-                _cat.title(), min_value=0.0, step=100.0, format="%.2f",
-                value=float(_h), key=f"sim_v_{_cat}", help=_hist_pct(_cat),
-            )
+            _hist_pct_val = round(_h / _ref_rec * 100, 4) if _ref_rec else 0.0
+            _vc1, _vc2, _vc3 = st.columns([3, 1.5, 2])
+            with _vc1:
+                st.markdown(
+                    f"<div style='padding-top:8px;font-size:0.9em'>{_cat.title()}</div>",
+                    unsafe_allow_html=True,
+                )
+            with _vc2:
+                _pct_input = st.number_input(
+                    "pct", label_visibility="collapsed",
+                    min_value=0.0, max_value=100.0, step=0.1, format="%.2f",
+                    value=float(_hist_pct_val), key=f"sim_pct_{_cat}",
+                    help=f"Histórico: {_hist_pct_val:.2f}% · R$ {_h:,.2f}/mês",
+                )
+            with _vc3:
+                _calc = _pct_input / 100 * sim_rec
+                st.markdown(
+                    f"<div style='padding-top:8px;text-align:right;font-size:0.9em'>"
+                    f"R$ {_calc:,.2f}</div>",
+                    unsafe_allow_html=True,
+                )
+            _var_vals[_cat] = _calc
 
         st.markdown("##### Custos Fixos")
         _fix_vals: dict[str, float] = {}
