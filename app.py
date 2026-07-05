@@ -780,7 +780,7 @@ with tab_sim:
         "FACÇÃO", "TALHAÇÃO", "EMBALAGEM", "FRETE PRODUÇÃO", "FRETE PEDIDO",
     ]
     _FIX_CATS = [
-        "CONTABILIDADE", "ECOMMERCE", "MATERIAIS EXPEDIENTE", "TRÁFEGO",
+        "CONTABILIDADE", "ECOMMERCE", "MATERIAIS EXPEDIENTE",
         "SERVIÇOS MKT/EVENTOS", "ENERGIA", "CONDOMÍNIO", "ALUGUEL",
         "TRANSPORTE", "INTERNET", "SALÁRIO", "OUTROS",
     ]
@@ -834,9 +834,8 @@ with tab_sim:
 
         st.markdown("##### Custos Variáveis")
         st.caption("Edite o **%** — o valor em R$ recalcula automaticamente com a receita.")
-        # Cabeçalho das colunas
         _hc1, _hc2, _hc3 = st.columns([3, 1.5, 2])
-        _hc2.markdown("<small style='color:#6B7280'>% receita</small>", unsafe_allow_html=True)
+        _hc2.markdown("<small style='color:#6B7280'>% / ROAS</small>", unsafe_allow_html=True)
         _hc3.markdown("<small style='color:#6B7280'>R$ calculado</small>", unsafe_allow_html=True)
 
         _var_vals: dict[str, float] = {}
@@ -865,6 +864,32 @@ with tab_sim:
                 )
             _var_vals[_cat] = _calc
 
+        # Tráfego pago — simulado via ROAS
+        _hist_traf = abs(_avg.get("TRÁFEGO", 0))
+        _hist_roas = round(_ref_rec / _hist_traf, 2) if _hist_traf > 0 else 5.0
+        _tc1, _tc2, _tc3 = st.columns([3, 1.5, 2])
+        with _tc1:
+            st.markdown(
+                "<div style='padding-top:8px;font-size:0.9em'>Tráfego Pago</div>",
+                unsafe_allow_html=True,
+            )
+        with _tc2:
+            _roas = st.number_input(
+                "ROAS", label_visibility="collapsed",
+                min_value=0.1, step=0.5, format="%.1f",
+                value=float(_hist_roas), key="sim_roas",
+                help=f"ROAS histórico: {_hist_roas:.1f}x  (receita ÷ verba de tráfego)\n"
+                     f"R$ {_hist_traf:,.2f}/mês",
+            )
+        with _tc3:
+            _traf_calc = sim_rec / _roas if _roas > 0 else 0.0
+            st.markdown(
+                f"<div style='padding-top:8px;text-align:right;font-size:0.9em'>"
+                f"R$ {_traf_calc:,.2f}</div>",
+                unsafe_allow_html=True,
+            )
+        _var_vals["TRÁFEGO"] = _traf_calc
+
         st.markdown("##### Custos Fixos")
         _fix_vals: dict[str, float] = {}
         for _cat in _FIX_CATS:
@@ -882,8 +907,9 @@ with tab_sim:
         _lucro_b   = _rec_liq - _cpv
         _mg_bruta  = _lucro_b / sim_rec * 100 if sim_rec else 0
         _frete_ped = _var_vals["FRETE PEDIDO"]
+        _trafego   = _var_vals["TRÁFEGO"]
         _desp_fix  = sum(_fix_vals.values())
-        _total_desp = _frete_ped + _desp_fix
+        _total_desp = _frete_ped + _trafego + _desp_fix
         _resultado = _lucro_b - _total_desp
         _mg_liq    = _resultado / sim_rec * 100 if sim_rec else 0
         _pe        = _total_desp / (_mg_bruta / 100) if _mg_bruta > 0 else None
