@@ -64,8 +64,8 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-tab_upload, tab_lancamentos, tab_dre, tab_ah, tab_regras = st.tabs(
-    ["📤 Upload", "📋 Lançamentos", "📊 DRE", "📈 Comparativo", "⚙️ Regras"]
+tab_upload, tab_lancamentos, tab_dre, tab_ah, tab_sim, tab_regras = st.tabs(
+    ["📤 Upload", "📋 Lançamentos", "📊 DRE", "📈 Comparativo", "🧮 Simulador", "⚙️ Regras"]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -770,7 +770,156 @@ with tab_ah:
         st.info("Nenhum lançamento encontrado para os períodos selecionados.")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 5 — REGRAS
+# TAB 5 — SIMULADOR DE MARGEM
+# ═══════════════════════════════════════════════════════════════════════════
+with tab_sim:
+    st.subheader("Simulador de Margem")
+
+    _VAR_CATS = [
+        "SIMPLES NACIONAL", "MATERIAL", "AVIAMENTO", "ETIQUETA", "ALÇA",
+        "FACÇÃO", "TALHAÇÃO", "EMBALAGEM", "FRETE PRODUÇÃO", "FRETE PEDIDO",
+    ]
+    _FIX_CATS = [
+        "CONTABILIDADE", "ECOMMERCE", "MATERIAIS EXPEDIENTE", "TRÁFEGO",
+        "SERVIÇOS MKT/EVENTOS", "ENERGIA", "CONDOMÍNIO", "ALUGUEL",
+        "TRANSPORTE", "INTERNET", "SALÁRIO", "OUTROS",
+    ]
+    _CPV_CATS = [
+        "MATERIAL", "AVIAMENTO", "ETIQUETA", "ALÇA",
+        "FACÇÃO", "TALHAÇÃO", "EMBALAGEM", "FRETE PRODUÇÃO",
+    ]
+
+    # ── Período de referência ────────────────────────────────────────────────
+    st.caption("Escolha um período para carregar as médias mensais como base. Todos os valores ficam editáveis.")
+    _years_s = db.get_available_years() or [pd.Timestamp.now().year]
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        sim_year = st.selectbox("Ano de referência", _years_s, key="sim_year")
+    with sc2:
+        sim_months_sel = st.multiselect(
+            "Meses", options=list(MONTHS_PT.keys()),
+            format_func=lambda k: MONTHS_PT[k],
+            placeholder="Todos os meses do ano",
+            key="sim_months",
+        )
+
+    _txs_sim = db.get_transactions(year=sim_year, months=sim_months_sel or None)
+
+    if _txs_sim:
+        _df_s = pd.DataFrame(_txs_sim)
+        _n_months = max(len(_df_s[["year", "month"]].drop_duplicates()), 1)
+        _avg = (_df_s.groupby("category")["amount"].sum() / _n_months).to_dict()
+    else:
+        _avg = {}
+        _n_months = 1
+
+    _ref_rec = abs(_avg.get("RECEITA BRUTA", 0))
+
+    def _hist_pct(cat: str) -> str:
+        v = abs(_avg.get(cat, 0))
+        p = f" · {v / _ref_rec * 100:.1f}% da receita" if _ref_rec and v else ""
+        return f"Histórico: R$ {v:,.2f}/mês{p}"
+
+    st.divider()
+
+    # ── Inputs + Resultado (lado a lado) ────────────────────────────────────
+    col_in, col_out = st.columns([3, 2], gap="large")
+
+    with col_in:
+        st.markdown("##### Receita")
+        sim_rec = st.number_input(
+            "Receita Bruta (R$)", min_value=0.0, step=1000.0, format="%.2f",
+            value=float(_ref_rec), key="sim_rec",
+        )
+
+        st.markdown("##### Custos Variáveis")
+        _var_vals: dict[str, float] = {}
+        for _cat in _VAR_CATS:
+            _h = abs(_avg.get(_cat, 0))
+            _var_vals[_cat] = st.number_input(
+                _cat.title(), min_value=0.0, step=100.0, format="%.2f",
+                value=float(_h), key=f"sim_v_{_cat}", help=_hist_pct(_cat),
+            )
+
+        st.markdown("##### Custos Fixos")
+        _fix_vals: dict[str, float] = {}
+        for _cat in _FIX_CATS:
+            _h = abs(_avg.get(_cat, 0))
+            _fix_vals[_cat] = st.number_input(
+                _cat.title(), min_value=0.0, step=100.0, format="%.2f",
+                value=float(_h), key=f"sim_f_{_cat}", help=_hist_pct(_cat),
+            )
+
+    with col_out:
+        # ── Cálculo ─────────────────────────────────────────────────────────
+        _simples   = _var_vals["SIMPLES NACIONAL"]
+        _rec_liq   = sim_rec - _simples
+        _cpv       = sum(_var_vals[c] for c in _CPV_CATS)
+        _lucro_b   = _rec_liq - _cpv
+        _mg_bruta  = _lucro_b / sim_rec * 100 if sim_rec else 0
+        _frete_ped = _var_vals["FRETE PEDIDO"]
+        _desp_fix  = sum(_fix_vals.values())
+        _total_desp = _frete_ped + _desp_fix
+        _resultado = _lucro_b - _total_desp
+        _mg_liq    = _resultado / sim_rec * 100 if sim_rec else 0
+        _pe        = _total_desp / (_mg_bruta / 100) if _mg_bruta > 0 else None
+
+        def _row(label: str, val: float, pct: float | None = None,
+                 bold: bool = False, positive_is_good: bool = True):
+            color = "#166534" if (val >= 0) == positive_is_good else "#991B1B"
+            pct_str = f"<small style='color:#6B7280'> ({pct:.1f}%)</small>" if pct is not None else ""
+            weight = "700" if bold else "400"
+            st.markdown(
+                f"<div style='display:flex;justify-content:space-between;"
+                f"padding:4px 0;border-bottom:1px solid #F3F4F6'>"
+                f"<span style='font-weight:{weight}'>{label}</span>"
+                f"<span style='font-weight:{weight};color:{color}'>"
+                f"R$ {val:,.2f}{pct_str}</span></div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("##### Resultado simulado")
+
+        _row("Receita Bruta", sim_rec, positive_is_good=True)
+        _row("(−) Simples Nacional", -_simples, -_simples / sim_rec * 100 if sim_rec else None, positive_is_good=False)
+        _row("= Receita Líquida", _rec_liq)
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        _row("(−) CPV", -_cpv, -_cpv / sim_rec * 100 if sim_rec else None, positive_is_good=False)
+        _row("= Lucro Bruto", _lucro_b, _mg_bruta, bold=True)
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        _row("(−) Despesas Operacionais", -_total_desp, -_total_desp / sim_rec * 100 if sim_rec else None, positive_is_good=False)
+
+        _res_color = "#166534" if _resultado >= 0 else "#991B1B"
+        st.markdown(
+            f"<div style='margin-top:10px;padding:12px 14px;border-radius:8px;"
+            f"background:{'#DCFCE7' if _resultado >= 0 else '#FEE2E2'}'>"
+            f"<div style='font-size:0.85em;color:#6B7280'>Resultado Operacional</div>"
+            f"<div style='font-size:1.6em;font-weight:700;color:{_res_color}'>"
+            f"R$ {_resultado:,.2f}</div>"
+            f"<div style='font-size:1em;color:{_res_color}'>{_mg_liq:.1f}% da receita</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        if _pe is not None:
+            st.markdown(
+                f"<div style='margin-top:8px;padding:8px 14px;border-radius:6px;"
+                f"background:#F3F4F6;font-size:0.9em'>"
+                f"📍 <b>Ponto de equilíbrio:</b> R$ {_pe:,.2f}/mês</div>",
+                unsafe_allow_html=True,
+            )
+            if sim_rec > 0:
+                _gap = sim_rec - _pe
+                _gap_color = "#166534" if _gap >= 0 else "#991B1B"
+                _gap_label = "acima" if _gap >= 0 else "abaixo"
+                st.markdown(
+                    f"<div style='padding:4px 14px;font-size:0.85em;color:{_gap_color}'>"
+                    f"Você está R$ {abs(_gap):,.2f} {_gap_label} do equilíbrio.</div>",
+                    unsafe_allow_html=True,
+                )
+
+# ═══════════════════════════════════════════════════════════════════════════
+# TAB 6 — REGRAS
 # ═══════════════════════════════════════════════════════════════════════════
 with tab_regras:
     st.subheader("Regras de categorização automática")
