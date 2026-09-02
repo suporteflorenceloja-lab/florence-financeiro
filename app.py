@@ -16,7 +16,16 @@ from dre import calculate_dre, export_excel
 from parsers import parse_csv, parse_ofx, parse_pdf
 
 # ── Initialise ──────────────────────────────────────────────────────────────
-db.init_db()
+try:
+    db.init_db()
+except Exception as _db_init_err:
+    st.error(
+        "⚠️ **Não foi possível conectar ao banco de dados.**\n\n"
+        "O projeto Supabase pode estar pausado. Acesse [supabase.com](https://supabase.com), "
+        "abra seu projeto e clique em **Restore project**. Atualize a página após restaurar.\n\n"
+        f"Detalhe: `{type(_db_init_err).__name__}`"
+    )
+    st.stop()
 
 
 def _extract_keyword(description: str) -> str:
