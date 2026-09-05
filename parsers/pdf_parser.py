@@ -95,10 +95,18 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
                 for r in rows:
                     r["amount"] = -r["amount"]
             elif is_extrato_cc:
-                # Tenta extração via tabelas (mais robusta para layout multi-coluna)
+                _dbg: list[str] = []
                 rows = _parse_santander_extrato_tables(pdf, filename)
+                _dbg.append(f"tables={len(rows)}")
                 if not rows:
-                    rows = _parse_santander_extrato(full_text_norm or full_text, filename)
+                    word_text = "\n".join(_extract_text_from_words(p) for p in pdf.pages)
+                    _dbg.append(f"word_chars={len(word_text)}")
+                    if word_text.strip():
+                        rows = _parse_santander_extrato(_normalize_text(word_text), filename, _dbg)
+                        _dbg.append(f"words_rows={len(rows)}")
+                if not rows:
+                    rows = _parse_santander_extrato(full_text_norm or full_text, filename, _dbg)
+                    _dbg.append(f"text_rows={len(rows)}")
             else:
                 # Genérico / fatura Santander / banco desconhecido
                 rows = _parse_text(full_text_norm, filename)
@@ -109,15 +117,23 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
                     if r["amount"] > 0:
                         r["amount"] = -r["amount"]
 
+            # ── Monta diagnóstico DENTRO do with (pdf ainda aberto) ───────────
+            _n_pages = len(pdf.pages)
+            _diag_raw = full_text_norm or full_text
+            _demo = _diag_raw.lower().find("demonstrativo")
+            if _demo != -1:
+                _diag_raw = _diag_raw[max(0, _demo - 100):]
+            _flags = (
+                f"páginas={_n_pages} chars={len(full_text)} "
+                f"santander={is_santander} extrato_cc={is_extrato_cc}"
+            )
+            if is_extrato_cc:
+                _flags += " | " + " ".join(_dbg)
+            _diag = f"=== DEBUG ===\n{_flags}\n=== TEXTO (pdfplumber) ===\n{_diag_raw}"
+
         # Remove zero-amount or empty-description rows
         rows = [r for r in rows if r["amount"] != 0.0 and r["description"].strip()]
-
-        # Diagnostic: start from "Demonstrativo" if present, else full text
-        diag = full_text_norm or full_text
-        demo_idx = diag.lower().find("demonstrativo")
-        if demo_idx != -1:
-            diag = diag[max(0, demo_idx - 100):]
-        return rows, diag[:6000]
+        return rows, _diag[:8000]
 
     except Exception as e:
         exc_name = type(e).__name__
@@ -186,7 +202,7 @@ def _parse_santander_extrato_tables(pdf, filename: str) -> list[dict]:
     return rows
 
 
-def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
+def _parse_santander_extrato(text: str, filename: str, _dbg: list | None = None) -> list[dict]:
     """Parser para extrato conta corrente Santander (dois passos).
 
     Passo 1: identifica linhas de transação (data + dois valores).
@@ -236,8 +252,25 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
             raw_amount  = _parse_amount(amt_m.group(1))  # valor da transação (sempre positivo no PDF)
             raw_balance = _parse_amount(amt_m.group(2))  # saldo após a transação
             mid = line[date_m.end():amt_m.start()].strip()
-            mid = re.sub(r"^\d{5,}\s*", "", mid).strip()
+            mid = re.sub(r"^\d{5,}\s*", "", mid).strip()   # número no início (doc simples)
+            mid = re.sub(r"\s+\d{10,}", "", mid).strip()   # CNPJ/CPF embedded no meio
             txn_lines.append((i, dt, raw_amount, raw_balance, mid))
+
+    if _dbg is not None:
+        _dbg.append(
+            f"total_linhas={len(lines)} start_original={start} txn_encontradas={len(txn_lines)}"
+        )
+        # Mostra primeiras linhas do texto e primeira linha de transação para diagnóstico
+        if lines:
+            _dbg.append(f"linha[0]={repr(lines[0][:80])}")
+        if txn_lines:
+            _dbg.append(f"1ª_txn=date={txn_lines[0][1]} amt={txn_lines[0][2]}")
+        else:
+            # Nenhuma transação — mostra por que as primeiras linhas com data falham
+            for i, line in enumerate(lines[:10]):
+                dm = date_pat.match(line)
+                am = two_nums.search(line) if dm else None
+                _dbg.append(f"  [{i}] date={'ok' if dm else 'no'} two_nums={'ok' if am else 'no'} | {repr(line[:60])}")
 
     txn_idx_set = {t[0] for t in txn_lines}
     consumed: set[int] = set()
@@ -254,7 +287,10 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
             amount = -abs(raw_amount) if raw_balance < prev_balance else abs(raw_amount)
         else:
             # Primeira transação sem saldo anterior: usa palavras-chave para determinar
-            _income_kw = ("RECEBID", "CREDITAD", "DEPÓSITO", "DEPOSITO", "RESTITUI")
+            _income_kw = (
+                "RECEBID", "CREDITAD", "DEPÓSITO", "DEPOSITO", "RESTITUI",
+                "RESGATE", "TED RECEBID", "PIX RECEBID", "RENDIMENTO",
+            )
             desc_upper = inline_desc.upper()
             amount = abs(raw_amount) if any(k in desc_upper for k in _income_kw) else -abs(raw_amount)
 

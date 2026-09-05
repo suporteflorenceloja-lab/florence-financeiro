@@ -43,19 +43,46 @@ def _compute_row_hashes(rows: list[dict]) -> list[str]:
     return hashes
 
 
+def _fetch_existing_counts(sb, source_files: list[str]) -> dict:
+    """Busca transações existentes no banco para os source_files dados.
+    Retorna Counter de (date, description, amount_str, source_file).
+    Agnóstico à fórmula do hash — compara por conteúdo."""
+    from collections import Counter
+    counts: Counter = Counter()
+    files = [sf for sf in source_files if sf]
+    if not files:
+        return counts
+    for i in range(0, len(files), 100):
+        chunk = files[i:i + 100]
+        result = (sb.table("transactions")
+                  .select("date,description,amount,source_file")
+                  .in_("source_file", chunk)
+                  .execute())
+        for r in result.data:
+            key = (r["date"], r["description"], f"{float(r['amount']):.2f}", r["source_file"])
+            counts[key] += 1
+    return counts
+
+
 def check_duplicate_rows(rows: list[dict]) -> list[bool]:
-    """Retorna lista de booleanos indicando quais rows já existem no banco."""
-    hashes = _compute_row_hashes(rows)
-    if not hashes:
+    """Retorna lista de booleanos — True se a ocorrência já existe no banco.
+    Usa comparação por conteúdo (date+desc+amount+source_file), não por hash,
+    garantindo compatibilidade com registros importados por versões anteriores."""
+    if not rows:
         return []
     sb = _client()
-    existing: set[str] = set()
-    for i in range(0, len(hashes), 100):
-        chunk = hashes[i:i + 100]
-        result = (sb.table("transactions").select("row_hash")
-                  .in_("row_hash", chunk).execute())
-        existing.update(r["row_hash"] for r in result.data)
-    return [h in existing for h in hashes]
+    source_files = list({r.get("source_file", "") for r in rows})
+    existing = _fetch_existing_counts(sb, source_files)
+
+    seq_counter: dict = {}
+    result = []
+    for r in rows:
+        sf = r.get("source_file", "")
+        key = (r["date"], r["description"], f"{r['amount']:.2f}", sf)
+        seq = seq_counter.get(key, 0)
+        seq_counter[key] = seq + 1
+        result.append(existing.get(key, 0) > seq)
+    return result
 
 
 def _is_duplicate_error(e: Exception) -> bool:
@@ -66,10 +93,27 @@ def _is_duplicate_error(e: Exception) -> bool:
 def insert_transactions(rows: list[dict]) -> tuple[int, int]:
     inserted = skipped = 0
     sb = _client()
+
+    # Pré-busca por conteúdo — agnóstico à fórmula de hash usada anteriormente.
+    source_files = list({r.get("source_file", "") for r in rows})
+    existing = _fetch_existing_counts(sb, source_files)
+
+    seq_counter: dict = {}
+    batch_counts: dict = {}
     hashes = _compute_row_hashes(rows)
 
     for r, h in zip(rows, hashes):
         sf = r.get("source_file", "")
+        key = (r["date"], r["description"], f"{r['amount']:.2f}", sf)
+        seq = seq_counter.get(key, 0)
+        seq_counter[key] = seq + 1
+
+        # Duplicata se esta ocorrência (seq) já existe no banco ou neste lote.
+        already = existing.get(key, 0) + batch_counts.get(key, 0)
+        if seq < already:
+            skipped += 1
+            continue
+
         data = {
             "row_hash": h,
             "date": r["date"],
@@ -83,6 +127,7 @@ def insert_transactions(rows: list[dict]) -> tuple[int, int]:
         try:
             sb.table("transactions").insert(data).execute()
             inserted += 1
+            batch_counts[key] = batch_counts.get(key, 0) + 1
         except Exception as e:
             if _is_duplicate_error(e):
                 skipped += 1
