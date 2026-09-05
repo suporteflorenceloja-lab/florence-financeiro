@@ -33,6 +33,15 @@ _AMOUNT_PAT = re.compile(
     r"[-–]?\s*(?:R\$\s*)?(\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})?|\d+,\d{2}|\d+\.\d{2})"
 )
 
+# Palavras que iniciam uma NOVA transação — linha não é continuação de outra
+_TXN_START_RE = re.compile(
+    r"^(pix|pagamento|pagto|transfer[êe]ncia|transf\.?|tarifa|ted\b|doc\b|saque|"
+    r"dep[oó]sito|resgate|aplica[çc][aã]o|iof|juros|multa|rendimento|compra|"
+    r"d[eé]bito|cr[eé]dito|recebimento|recebid|lançamento|lanc\.|estorno|devolu|"
+    r"comiss[aã]o|anuidade|seguro)",
+    re.I,
+)
+
 
 def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
     """
@@ -63,36 +72,42 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
                         continue
                 all_text_pages.append(text)
 
-        full_text = "\n".join(all_text_pages)
-        full_text_norm = _normalize_text(full_text)
+            full_text = "\n".join(all_text_pages)
+            full_text_norm = _normalize_text(full_text)
 
-        ft_low = full_text.lower()
-        fn_low = filename.lower()
-        is_nubank    = "nubank" in ft_low or "nubank" in fn_low or \
-                       "nu pagamentos" in ft_low or "nu.com.br" in ft_low
-        is_santander = (not is_nubank) and ("santander" in ft_low or "santander" in fn_low)
-        is_extrato_cc = is_santander and bool(re.search(r"per[ií]odos?:|agência:|conta:\s*\d", full_text, re.I))
-        is_nubank_extrato = is_nubank and bool(re.search(r"movimenta[çc][õo]es", full_text, re.I))
+            ft_low = full_text.lower()
+            fn_low = filename.lower()
+            is_nubank    = "nubank" in ft_low or "nubank" in fn_low or \
+                           "nu pagamentos" in ft_low or "nu.com.br" in ft_low
+            is_santander = (not is_nubank) and ("santander" in ft_low or "santander" in fn_low)
+            # Extrato CC: detecta pelo cabeçalho "Data Histórico" — único ao extrato de conta
+            is_extrato_cc = is_santander and bool(re.search(
+                r"data\s+hist[oó]rico", full_text, re.I
+            ))
+            is_nubank_extrato = is_nubank and bool(re.search(r"movimenta[çc][õo]es", full_text, re.I))
 
-        if is_nubank_extrato:
-            # Nubank conta corrente — sinais já corretos (entradas +, saídas -)
-            rows = _parse_nubank_extrato(full_text_norm or full_text, filename)
-        elif is_nubank:
-            # Nubank fatura — despesas positivas no PDF, inverter para negativo
-            rows = _parse_nubank_fatura(full_text_norm or full_text, filename)
-            for r in rows:
-                r["amount"] = -r["amount"]
-        elif is_extrato_cc:
-            rows = _parse_santander_extrato(full_text_norm or full_text, filename)
-        else:
-            rows = _parse_text(full_text_norm, filename)
-            if not rows:
-                rows = _parse_text(full_text, filename)
-            # Qualquer arquivo não identificado (fatura de cartão genérica, etc.):
-            # valores positivos são despesas — inverter para negativo
-            for r in rows:
-                if r["amount"] > 0:
+            if is_nubank_extrato:
+                # Nubank conta corrente — sinais já corretos (entradas +, saídas -)
+                rows = _parse_nubank_extrato(full_text_norm or full_text, filename)
+            elif is_nubank:
+                # Nubank fatura — despesas positivas no PDF, inverter para negativo
+                rows = _parse_nubank_fatura(full_text_norm or full_text, filename)
+                for r in rows:
                     r["amount"] = -r["amount"]
+            elif is_extrato_cc:
+                # Tenta extração via tabelas (mais robusta para layout multi-coluna)
+                rows = _parse_santander_extrato_tables(pdf, filename)
+                if not rows:
+                    rows = _parse_santander_extrato(full_text_norm or full_text, filename)
+            else:
+                # Genérico / fatura Santander / banco desconhecido
+                rows = _parse_text(full_text_norm, filename)
+                if not rows:
+                    rows = _parse_text(full_text, filename)
+                # Faturas de cartão e extratos genéricos: despesas vêm como positivos
+                for r in rows:
+                    if r["amount"] > 0:
+                        r["amount"] = -r["amount"]
 
         # Remove zero-amount or empty-description rows
         rows = [r for r in rows if r["amount"] != 0.0 and r["description"].strip()]
@@ -105,7 +120,70 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
         return rows, diag[:6000]
 
     except Exception as e:
-        return [], f"Erro ao processar PDF: {e}"
+        exc_name = type(e).__name__
+        msg = str(e)
+        if "encrypt" in msg.lower() or "password" in msg.lower():
+            return [], "PDF protegido por senha. Baixe sem senha e tente novamente."
+        return [], f"Erro ao processar PDF ({exc_name}): {msg or 'sem detalhes'}"
+
+
+def _parse_santander_extrato_tables(pdf, filename: str) -> list[dict]:
+    """Extrai transações do extrato Santander via pdfplumber.extract_tables().
+
+    Mais robusto que text-parsing para PDFs com layout multi-coluna (Data | Histórico |
+    Documento | Valor | Saldo). O sinal do valor é preservado diretamente do PDF.
+    """
+    rows = []
+    # Formato BR: -10.000,00 ou 10.969,60
+    amt_re = re.compile(r"^-?\d{1,3}(?:\.\d{3})*,\d{2}$")
+
+    for page in pdf.pages:
+        for table in (page.extract_tables() or []):
+            if not table:
+                continue
+            for row in table:
+                if not row:
+                    continue
+                cells = [re.sub(r"\s+", " ", str(c or "")).strip() for c in row]
+                if not any(cells):
+                    continue
+
+                # Ignora linhas de cabeçalho
+                if any(re.search(r"hist[oó]rico|valor\s*\(r\$\)|saldo\s*\(r\$\)", c, re.I)
+                       for c in cells):
+                    continue
+
+                # Data deve estar na primeira célula
+                dt = None
+                if cells and re.match(r"\d{2}/\d{2}/\d{4}", cells[0]):
+                    dt = _parse_date_str(cells[0])
+                if not dt:
+                    continue
+
+                # Células numéricas (identifica valor e saldo)
+                num_cells = [(i, c) for i, c in enumerate(cells) if amt_re.match(c)]
+                if not num_cells:
+                    continue
+
+                # Valor = penúltimo número (último = saldo); se só um, usa esse
+                amt_str = num_cells[-2][1] if len(num_cells) >= 2 else num_cells[-1][1]
+                amount = _parse_amount(amt_str)
+                if amount == 0.0:
+                    continue
+
+                # Índices usados (data e números)
+                used = {0} | {i for i, _ in num_cells}
+                # Número de documento (só dígitos, 5+ chars) — ignorar
+                used |= {i for i, c in enumerate(cells) if re.match(r"^\d{5,}$", c)}
+
+                desc_parts = [cells[i] for i in range(len(cells)) if i not in used and cells[i]]
+                description = " ".join(desc_parts).strip() or "Sem descrição"
+
+                r = _make_row(dt, description[:200], amount, filename)
+                if r:
+                    rows.append(r)
+
+    return rows
 
 
 def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
@@ -185,14 +263,16 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
         prev_txn_idx = txn_lines[tidx - 1][0] if tidx > 0 else -1
         next_txn_idx = txn_lines[tidx + 1][0] if tidx + 1 < len(txn_lines) else len(lines)
 
-        # Linhas de continuação APÓS (curtas, apenas quando a linha de transação não tem
-        # descrição inline — senão a linha pertence à próxima transação)
-        # Processadas primeiro para marcar como consumidas antes do scan "before" da próxima txn
+        # Linha de continuação APÓS (apenas a imediatamente seguinte, curta e que não
+        # começa como uma nova transação — evita capturar a descrição "before" da próxima)
         after = []
         if not inline_desc:
-            for j in range(line_idx + 1, min(next_txn_idx, line_idx + 3)):
-                if j not in txn_idx_set and is_desc(lines[j]) and len(lines[j]) <= 25:
-                    after.append(lines[j])
+            for j in range(line_idx + 1, min(next_txn_idx, line_idx + 2)):
+                line_j = lines[j]
+                if (j not in txn_idx_set and is_desc(line_j)
+                        and len(line_j) <= 30
+                        and not _TXN_START_RE.match(line_j)):
+                    after.append(line_j)
                     consumed.add(j)
 
         # Linhas de descrição ANTES (entre a transação anterior e esta, não consumidas)
