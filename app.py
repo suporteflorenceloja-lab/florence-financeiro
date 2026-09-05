@@ -455,10 +455,18 @@ with tab_lancamentos:
         st.info("Nenhum lançamento encontrado para os filtros selecionados.")
     else:
         df = pd.DataFrame(txs)
-        display_cols = ["id", "date", "description", "amount", "category", "source_file"]
+        # Formata created_at como "DD/MM/AAAA HH:MM" se existir
+        if "created_at" in df.columns:
+            df["created_at"] = pd.to_datetime(df["created_at"], utc=True, errors="coerce") \
+                .dt.tz_convert("America/Sao_Paulo") \
+                .dt.strftime("%d/%m/%Y %H:%M")
+            display_cols = ["id", "date", "created_at", "description", "amount", "category", "source_file"]
+        else:
+            display_cols = ["id", "date", "description", "amount", "category", "source_file"]
         df = df[display_cols].rename(columns={
-            "id": "ID", "date": "Data", "description": "Descrição",
-            "amount": "Valor (R$)", "category": "Categoria", "source_file": "Arquivo",
+            "id": "ID", "date": "Data", "created_at": "Registrado em",
+            "description": "Descrição", "amount": "Valor (R$)",
+            "category": "Categoria", "source_file": "Arquivo",
         })
 
         edited_lc = st.data_editor(
@@ -470,6 +478,7 @@ with tab_lancamentos:
                 "Valor (R$)": st.column_config.NumberColumn(format="R$ %.2f"),
                 "ID": st.column_config.NumberColumn(disabled=True),
                 "Data": st.column_config.TextColumn(disabled=True),
+                "Registrado em": st.column_config.TextColumn(disabled=True),
                 "Descrição": st.column_config.TextColumn(disabled=True),
                 "Arquivo": st.column_config.TextColumn(disabled=True),
             },
