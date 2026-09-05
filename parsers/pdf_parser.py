@@ -217,7 +217,8 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
     )
     skip_line = re.compile(
         r"^(saldo|total|vencimento|central|atendimento|sac|ouvidoria|4004|0800|"
-        r"juros|iof|limite|desbloqueio|provisão|posição|período)",
+        r"juros|iof|limite|desbloqueio|provisão|posição|período"
+        r"|\d{1,2}/\d{1,2}$)",  # "1/5", "2/5" etc. — números de página
         re.I,
     )
 
@@ -263,17 +264,19 @@ def _parse_santander_extrato(text: str, filename: str) -> list[dict]:
         prev_txn_idx = txn_lines[tidx - 1][0] if tidx > 0 else -1
         next_txn_idx = txn_lines[tidx + 1][0] if tidx + 1 < len(txn_lines) else len(lines)
 
-        # Linha de continuação APÓS (apenas a imediatamente seguinte, curta e que não
-        # começa como uma nova transação — evita capturar a descrição "before" da próxima)
+        # Linhas de continuação APÓS — até 2 linhas imediatas, curtas, que não começam
+        # como nova transação (_TXN_START_RE) e não são números de página (skip_line).
+        # O guard "if not inline_desc" foi removido: mesmo com desc inline, a linha
+        # seguinte pode ser uma continuação (nome de empresa truncado). O _TXN_START_RE
+        # garante que descrições de novas transações não sejam capturadas aqui.
         after = []
-        if not inline_desc:
-            for j in range(line_idx + 1, min(next_txn_idx, line_idx + 2)):
-                line_j = lines[j]
-                if (j not in txn_idx_set and is_desc(line_j)
-                        and len(line_j) <= 30
-                        and not _TXN_START_RE.match(line_j)):
-                    after.append(line_j)
-                    consumed.add(j)
+        for j in range(line_idx + 1, min(next_txn_idx, line_idx + 3)):
+            line_j = lines[j]
+            if (j not in txn_idx_set and is_desc(line_j)
+                    and len(line_j) <= 30
+                    and not _TXN_START_RE.match(line_j)):
+                after.append(line_j)
+                consumed.add(j)
 
         # Linhas de descrição ANTES (entre a transação anterior e esta, não consumidas)
         before = []
