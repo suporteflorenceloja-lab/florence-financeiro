@@ -22,8 +22,11 @@ def init_db():
     _client()  # Verifica conexão; tabelas criadas no dashboard do Supabase
 
 
-def _hash(date, description, amount):
-    raw = f"{date}|{description}|{amount:.2f}"
+def _hash(date, description, amount, source_file="", seq=0):
+    # source_file + seq garante que transações idênticas no mesmo arquivo
+    # (ex: 5× "Tarifa Pix" no mesmo dia) sejam todas importadas, enquanto
+    # o re-envio do mesmo arquivo continua sendo detectado como duplicata.
+    raw = f"{date}|{description}|{amount:.2f}|{source_file}|{seq}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -35,15 +38,23 @@ def _is_duplicate_error(e: Exception) -> bool:
 def insert_transactions(rows: list[dict]) -> tuple[int, int]:
     inserted = skipped = 0
     sb = _client()
+    # Contador de sequência por (data, descrição, valor, arquivo) dentro do lote
+    seq_counter: dict[tuple, int] = {}
+
     for r in rows:
-        h = _hash(r["date"], r["description"], r["amount"])
+        sf = r.get("source_file", "")
+        key = (r["date"], r["description"], f"{r['amount']:.2f}", sf)
+        seq = seq_counter.get(key, 0)
+        seq_counter[key] = seq + 1
+
+        h = _hash(r["date"], r["description"], r["amount"], sf, seq)
         data = {
             "row_hash": h,
             "date": r["date"],
             "description": r["description"],
             "amount": r["amount"],
             "category": r.get("category", "OUTROS"),
-            "source_file": r.get("source_file", ""),
+            "source_file": sf,
             "month": r.get("month"),
             "year": r.get("year"),
         }
