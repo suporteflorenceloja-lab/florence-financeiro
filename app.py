@@ -302,6 +302,14 @@ with tab_upload:
             r["_skip"] = _should_skip(r["description"])
         all_rows = categorize(all_rows, db.get_rules())
 
+        # Verifica quais já existem no banco (duplicados)
+        try:
+            dup_flags = db.check_duplicate_rows(all_rows)
+        except Exception:
+            dup_flags = [False] * len(all_rows)
+        for i, r in enumerate(all_rows):
+            r["_duplicate"] = dup_flags[i]
+
         st.session_state.preview_rows = all_rows
         st.session_state.pdf_diags = pdf_diagnostics
 
@@ -328,8 +336,19 @@ with tab_upload:
             "amount": "Valor (R$)", "category": "Categoria",
             "source_file": "Arquivo",
         })
-        skip_flags = [r.get("_skip", False) for r in st.session_state.preview_rows]
+
+        # "Excluir" pré-marcado para skip E para duplicados já existentes no banco
+        skip_flags = [
+            r.get("_skip", False) or r.get("_duplicate", False)
+            for r in st.session_state.preview_rows
+        ]
+        # Coluna de status: indica motivo da pré-marcação
+        status_vals = [
+            "⚠️ duplicado" if r.get("_duplicate") else ""
+            for r in st.session_state.preview_rows
+        ]
         preview_df.insert(0, "Excluir", skip_flags)
+        preview_df.insert(1, "Status", status_vals)
 
         # Chave dinâmica — muda a cada remoção, forçando widget limpo sem cache antigo
         editor_key = f"preview_editor_{n}"
@@ -338,6 +357,7 @@ with tab_upload:
             preview_df,
             column_config={
                 "Excluir": st.column_config.CheckboxColumn("Excluir", default=False),
+                "Status":   st.column_config.TextColumn("Status", disabled=True),
                 "Categoria": st.column_config.SelectboxColumn(
                     "Categoria", options=CATEGORIES, required=True
                 ),

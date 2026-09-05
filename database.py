@@ -30,6 +30,34 @@ def _hash(date, description, amount, source_file="", seq=0):
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+def _compute_row_hashes(rows: list[dict]) -> list[str]:
+    """Computa o hash de cada row usando a mesma lógica de sequência do insert."""
+    seq_counter: dict[tuple, int] = {}
+    hashes = []
+    for r in rows:
+        sf = r.get("source_file", "")
+        key = (r["date"], r["description"], f"{r['amount']:.2f}", sf)
+        seq = seq_counter.get(key, 0)
+        seq_counter[key] = seq + 1
+        hashes.append(_hash(r["date"], r["description"], r["amount"], sf, seq))
+    return hashes
+
+
+def check_duplicate_rows(rows: list[dict]) -> list[bool]:
+    """Retorna lista de booleanos indicando quais rows já existem no banco."""
+    hashes = _compute_row_hashes(rows)
+    if not hashes:
+        return []
+    sb = _client()
+    existing: set[str] = set()
+    for i in range(0, len(hashes), 100):
+        chunk = hashes[i:i + 100]
+        result = (sb.table("transactions").select("row_hash")
+                  .in_("row_hash", chunk).execute())
+        existing.update(r["row_hash"] for r in result.data)
+    return [h in existing for h in hashes]
+
+
 def _is_duplicate_error(e: Exception) -> bool:
     msg = str(e).lower()
     return "23505" in msg or "duplicate" in msg or "unique" in msg
@@ -38,16 +66,10 @@ def _is_duplicate_error(e: Exception) -> bool:
 def insert_transactions(rows: list[dict]) -> tuple[int, int]:
     inserted = skipped = 0
     sb = _client()
-    # Contador de sequência por (data, descrição, valor, arquivo) dentro do lote
-    seq_counter: dict[tuple, int] = {}
+    hashes = _compute_row_hashes(rows)
 
-    for r in rows:
+    for r, h in zip(rows, hashes):
         sf = r.get("source_file", "")
-        key = (r["date"], r["description"], f"{r['amount']:.2f}", sf)
-        seq = seq_counter.get(key, 0)
-        seq_counter[key] = seq + 1
-
-        h = _hash(r["date"], r["description"], r["amount"], sf, seq)
         data = {
             "row_hash": h,
             "date": r["date"],
