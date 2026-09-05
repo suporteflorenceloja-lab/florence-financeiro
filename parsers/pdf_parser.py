@@ -77,9 +77,13 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
 
             ft_low = full_text.lower()
             fn_low = filename.lower()
-            is_nubank    = "nubank" in ft_low or "nubank" in fn_low or \
-                           "nu pagamentos" in ft_low or "nu.com.br" in ft_low
-            is_santander = (not is_nubank) and ("santander" in ft_low or "santander" in fn_low)
+            # Identifica o banco pelo CABEÇALHO (primeiros 400 chars) para evitar
+            # falso positivo de "nu pagamentos" que aparece como destinatário de Pix
+            # em extratos de outros bancos (ex: "Pix Enviado NU PAGAMENTOS S A").
+            _hdr = ft_low[:400]
+            is_nubank    = ("nubank" in _hdr or "nubank" in fn_low or
+                            "nu pagamentos" in _hdr or "nu.com.br" in _hdr)
+            is_santander = (not is_nubank) and ("santander" in _hdr or "santander" in fn_low)
             # Extrato CC: detecta pelo cabeçalho "Data Histórico" — único ao extrato de conta
             is_extrato_cc = is_santander and bool(re.search(
                 r"data\s+hist[oó]rico", full_text, re.I
