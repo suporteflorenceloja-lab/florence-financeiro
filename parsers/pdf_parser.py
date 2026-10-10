@@ -359,7 +359,9 @@ def _parse_santander_extrato(text: str, filename: str, _dbg: list | None = None)
             raw_balance = _parse_amount(amt_m.group(2))  # saldo após a transação
             mid = line[date_m.end():amt_m.start()].strip()
             mid = re.sub(r"^\d{5,}\s*", "", mid).strip()   # número no início (doc simples)
-            mid = re.sub(r"\s+\d{10,}", "", mid).strip()   # CNPJ/CPF embedded no meio
+            # Nº de documento no fim (ex: "Pix Recebido 15615783710 13273866");
+            # CPF (11) / CNPJ (14) ficam na descrição para identificar a origem
+            mid = re.sub(r"(?<=\d)\s+\d{5,10}$", "", mid).strip()
             txn_lines.append((i, dt, raw_amount, raw_balance, mid))
 
     if _dbg is not None:
