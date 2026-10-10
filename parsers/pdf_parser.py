@@ -378,6 +378,11 @@ def _parse_santander_extrato(text: str, filename: str, _dbg: list | None = None)
                 am = two_nums.search(line) if dm else None
                 _dbg.append(f"  [{i}] date={'ok' if dm else 'no'} two_nums={'ok' if am else 'no'} | {repr(line[:60])}")
 
+    # Extrato do app Santander Empresas já traz o sinal (saídas com "-", entradas
+    # sem sinal). Se houver qualquer valor negativo, confia no PDF — a inferência
+    # por saldo erra porque a lista vem do mais recente para o mais antigo.
+    signed_pdf = any(t[2] < 0 for t in txn_lines)
+
     txn_idx_set = {t[0] for t in txn_lines}
     consumed: set[int] = set()
 
@@ -385,7 +390,7 @@ def _parse_santander_extrato(text: str, filename: str, _dbg: list | None = None)
     for tidx, (line_idx, dt, raw_amount, raw_balance, inline_desc) in enumerate(txn_lines):
         # Determina sinal via comparação de saldos consecutivos:
         # saldo diminuiu → débito (despesa, negativo); saldo aumentou → crédito (receita, positivo)
-        if raw_amount < 0:
+        if signed_pdf or raw_amount < 0:
             # PDF já trouxe sinal explícito — respeita
             amount = raw_amount
         elif tidx > 0:
