@@ -90,7 +90,15 @@ def parse_pdf(file_bytes: bytes, filename: str = "") -> tuple[list[dict], str]:
             ))
             is_nubank_extrato = is_nubank and bool(re.search(r"movimenta[çc][õo]es", full_text, re.I))
 
-            if is_nubank_extrato:
+            # Extrato Consolidado Inteligente (Santander PJ): datas DD/MM sem ano,
+            # débitos com "-" no final, colunas Créditos | Débitos | Saldo
+            is_consolidado = is_santander and not is_extrato_cc and bool(re.search(
+                r"extrato\s+consolidado\s+inteligente", full_text, re.I
+            ))
+
+            if is_consolidado:
+                rows = _parse_santander_consolidado(full_text, filename)
+            elif is_nubank_extrato:
                 # Nubank conta corrente — sinais já corretos (entradas +, saídas -)
                 rows = _parse_nubank_extrato(full_text_norm or full_text, filename)
             elif is_nubank:
@@ -202,6 +210,100 @@ def _parse_santander_extrato_tables(pdf, filename: str) -> list[dict]:
                 r = _make_row(dt, description[:200], amount, filename)
                 if r:
                     rows.append(r)
+
+    return rows
+
+
+_MESES_PT = {
+    "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3, "abril": 4, "maio": 5,
+    "junho": 6, "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10,
+    "novembro": 11, "dezembro": 12,
+}
+
+
+def _parse_santander_consolidado(text: str, filename: str) -> list[dict]:
+    """Parser para o "Extrato Consolidado Inteligente" do Santander PJ.
+
+    Seção "Conta Corrente > Movimentação", uma transação por linha:
+        02/09 TED RECEBIDA 47917930000178 - 19.196,33
+        PIX ENVIADO - 20.000,00-
+        FL INDUSTRIA E COMERCIO D            ← continuação (favorecido)
+        RESGATE CONTAMAX AUTOMATICO - 943,67 0,00
+    Data só aparece na 1ª transação do dia (e às vezes sozinha antes da quebra
+    de página). Débito = valor com "-" no final. Ano vem de "<mês>/AAAA".
+    """
+    rows = []
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+
+    ref_year = None
+    ref_month = None
+    m = re.search(r"\b(" + "|".join(_MESES_PT) + r")/(\d{4})\b", text, re.I)
+    if m:
+        ref_month = _MESES_PT[m.group(1).lower()]
+        ref_year = int(m.group(2))
+    if not ref_year:
+        ref_year = datetime.now().year
+
+    # Delimita a seção de movimentação
+    start = end = None
+    for i, line in enumerate(lines):
+        if start is None and re.match(r"^movimenta[çc][ãa]o$", line, re.I):
+            start = i + 1
+        elif start is not None and re.match(r"^saldos\s+por\s+per[ií]odo", line, re.I):
+            end = i
+            break
+    if start is None:
+        return rows
+    lines = lines[start:end]
+
+    amt = r"\d{1,3}(?:\.\d{3})*,\d{2}"
+    txn_re = re.compile(
+        rf"^(?:(\d{{2}}/\d{{2}})\s+)?(.+?)\s+(-|\d+)\s+({amt})(-?)(?:\s+-?{amt}-?)?$"
+    )
+    date_only_re = re.compile(r"^(\d{2}/\d{2})$")
+    skip_re = re.compile(
+        r"^(data\s+descri|cr[ée]ditos\s+d[ée]bitos|saldo\s+em\s|extrato_pj|balp_|"
+        r"p[aá]gina\s*:|extrato\s+consolidado|(" + "|".join(_MESES_PT) + r")/\d{4}$|[“\"])",
+        re.I,
+    )
+
+    cur_date = None
+    last = None
+    for line in lines:
+        if skip_re.match(line):
+            last = None
+            continue
+        dm = date_only_re.match(line)
+        if dm:
+            cur_date = dm.group(1)
+            last = None
+            continue
+        tm = txn_re.match(line)
+        if tm:
+            if tm.group(1):
+                cur_date = tm.group(1)
+            if not cur_date:
+                continue
+            day, month = (int(x) for x in cur_date.split("/"))
+            year = ref_year
+            # Lançamento de dezembro em extrato de janeiro (ou vice-versa)
+            if ref_month == 1 and month == 12:
+                year -= 1
+            try:
+                dt = datetime(year, month, day)
+            except ValueError:
+                continue
+            amount = _parse_amount(tm.group(4))
+            if tm.group(5) == "-":
+                amount = -amount
+            last = _make_row(dt, tm.group(2).strip(), amount, filename)
+            if last and amount != 0.0:
+                rows.append(last)
+            continue
+        # Linha de continuação: favorecido/empresa da transação anterior
+        if last is not None and not _find_all_amounts(line):
+            last["description"] = f"{last['description']} {line}"[:200]
+            last = None
 
     return rows
 
