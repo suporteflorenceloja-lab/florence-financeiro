@@ -470,9 +470,9 @@ def _parse_nubank_fatura(text: str, filename: str) -> list[dict]:
             start = i + 1
             break
 
-    # Padrão: "26 ABR •••• 1303 Descrição R$ 239,88"
+    # Padrão: "26 ABR •••• 1303 Descrição R$ 239,88" (a partir de nov/2026 sem "•••• 1303")
     txn_pat = re.compile(
-        r"^(\d{2}\s+[A-Za-z]{3})\s+\S+\s+\d{4}\s+(.+?)\s+R\$\s*([\d.]+,\d{2})\s*$"
+        r"^(\d{2}\s+[A-Za-z]{3})\s+(?:\S+\s+\d{4}\s+)?(.+?)\s+R\$\s*([\d.]+,\d{2})\s*$"
     )
 
     for line in lines[start:]:
